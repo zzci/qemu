@@ -1,0 +1,10 @@
+# Large runtime artifacts — never commit.
+# ISOs / virtio drivers go in images/; guest disks, OVMF/TPM state and logs live under vms/.
+images/
+vms/
+storage/
+supervisor/target/
+supervisor/ui/node_modules/
+supervisor/ui/dist/
+supervisor/ui/tsconfig.tsbuildinfo
+core

@@ -1,0 +1,58 @@
+# Static machine topology for QEMU's -readconfig. Rendered by gen_qemu_conf() into
+# /storage/<vm>.qemu.conf (do not edit the rendered copy; edit this template). Per-VM
+# values come from windows.conf; @PLACEHOLDER@ markers are substituted at boot.
+#
+# Only QemuOpts-expressible, non-dynamic hardware lives here. Args with no config group
+# or that are dynamic stay on the command line: -cpu, display (-vga/-vnc), -monitor,
+# networking, USB, and the data drives. QEMU instantiates sections by category
+# (chardev -> object -> device), so the chrtpm <- tpmdev <- tpm-tis chain is order-safe.
+
+[machine]
+type = "@MACHINE@"
+accel = "@ACCEL@"
+
+[smp-opts]
+cpus = "@CPU_CORES@"
+
+[memory]
+size = "@RAM_SIZE@"
+
+[rtc]
+base = "localtime"
+
+[drive]
+file = "@OVMF_CODE@"
+if = "pflash"
+format = "raw"
+unit = "0"
+readonly = "on"
+
+[drive]
+file = "@OVMF_VARS@"
+if = "pflash"
+format = "raw"
+unit = "1"
+
+[chardev "chrtpm"]
+backend = "socket"
+path = "@TPM_SOCK@"
+
+[tpmdev "tpm0"]
+type = "emulator"
+chardev = "chrtpm"
+
+[device "tpm"]
+driver = "tpm-tis"
+tpmdev = "tpm0"
+
+[device "balloon"]
+driver = "virtio-balloon-pci"
+
+[device "rng0"]
+driver = "virtio-rng-pci"
+
+[device "xhci"]
+driver = "qemu-xhci"
+
+[device "tablet"]
+driver = "usb-tablet"

@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# Windows 11 unattended installer (copied to {dir}/scripts/install; run by the vmd install gate).
+# All options arrive as env vars: [guest.x.install] keys UPPERCASED (SOURCE_ISO VIRTIO_ISO USERNAME
+# PASSWORD LANGUAGE REGION KEYBOARD IMAGE_INDEX ...) + VMD_<KEY> placeholders + FORCE.
+# Pipeline: source ISO -> slipstream virtio + autounattend.xml -> repack -> lean install VM.
+set -euo pipefail
+LOG_TAG=install
+source /build/bin/qemu-common.sh
+
+# ----------------------------------------------------------------- config ----
+: "${STORAGE:=/vms}"
+: "${IMAGES:=/images}"
+: "${RAM_SIZE:=${VMD_RAM:-4G}}"
+: "${CPU_CORES:=${VMD_CPUS:-2}}"
+: "${DISK_SIZE:=${VMD_DISK_SIZE:-128G}}"
+: "${MACHINE:=q35}"
+: "${USERNAME:=docker}"
+: "${PASSWORD:=admin}"
+: "${DISK:=${VMD_DISK:-$STORAGE/win11/windows.qcow2}}"
+: "${BUILD_DIR:=/tmp/win11-build}"          # transient ISO repack workspace (NOT persisted)
+: "${AUTO_ISO:=$BUILD_DIR/win11-auto.iso}"
+: "${IMAGE_INDEX:=1}"              # install.wim image index (1 = LTSC on the eval ISO)
+: "${WEB_PORT:=${VMD_WEB_PORT:-8006}}"
+# locale (friendly name or xx-XX code). Default en-US.
+: "${LANGUAGE:=en-US}"
+: "${REGION:=$LANGUAGE}"
+: "${KEYBOARD:=$LANGUAGE}"
+: "${VNC_HOST:=127.0.0.1}"         # VNC bind address; localhost = reachable only via the noVNC bridge
+: "${VNC_PASSWORD:=}"             # empty = no VNC auth (watch the install over the noVNC console)
+: "${EXTRA_ARGS:=}"
+: "${FORCE:=0}"
+: "${MIN_INSTALL_SECS:=120}"      # a real unattended install never finishes faster than this; a
+                                  # quicker clean exit means setup never ran (bad/unbootable ISO)
+CONFIG_DIR=/build/config
+UA="Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+# The Windows ISO is NOT auto-downloaded (Microsoft eval URLs expire / change) — the user must
+# provide it. The virtio driver ISO has a stable URL and is fetched only as a fallback.
+: "${VIRTIO_URL:=https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso}"
+
+# Per-VM state derived from the disk path (clones never collide on one /storage).
+STATE="${DISK%.*}"
+VARS="$STATE.OVMF_VARS.fd"
+MONITOR="$STATE.monitor.sock"
+VM_CONF="$STATE.conf"
+INSTALL_STATE="$STATE.install"        # install lifecycle record: installing | installed
+VNC_SECRET="/tmp/$(basename "$STATE").vncpw"   # ephemeral VNC secret file; never written to /storage
+
+# Map a friendly language name (or pass an xx-XX code through) to a culture code.
+locale_code() {
+    case "${1,,}" in
+        *-*) printf '%s' "$1" ;;
+        english|"english (united states)") echo en-US ;;
+        "english international"|"english (united kingdom)") echo en-GB ;;
+        chinese|"chinese (simplified)") echo zh-CN ;;
+        "chinese (traditional)") echo zh-TW ;;
+        japanese) echo ja-JP ;;  korean) echo ko-KR ;;
+        french) echo fr-FR ;;    german) echo de-DE ;;
+        spanish) echo es-ES ;;   italian) echo it-IT ;;
+        portuguese|"portuguese (brazil)") echo pt-BR ;;
+        russian) echo ru-RU ;;   polish) echo pl-PL ;;
+        dutch) echo nl-NL ;;     turkish) echo tr-TR ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# Honor CPU/RAM/MACHINE from an existing conf on rebuild (resources only). The installer never
+# writes the conf — start-win11 owns it.
+load_conf() {
+    [ -f "$VM_CONF" ] || return 0
+    local key val
+    while IFS='=' read -r key val; do
+        case "$key" in CPU_CORES|RAM_SIZE|MACHINE) printf -v "$key" '%s' "$val" ;; esac
+    done < "$VM_CONF"
+    return 0
+}
+
+# detect_kvm (-> ACCEL_MODE/CPU_MODEL), setup_firmware (-> CODE/VARS) and build_vnc_args (-> VNC_ARGS)
+# are provided by qemu-common.sh; the install device model builds its ACCEL array from ACCEL_MODE.
+
+# ------------------------------------------------------------- ISO build ----
+resolve_source_iso() {
+    : "${SOURCE_ISO:=$IMAGES/win11.iso}"     # fixed default; override with -e SOURCE_ISO=/path/to.iso
+    [ -f "$SOURCE_ISO" ] || die "no Windows ISO at $SOURCE_ISO — provide /images/win11.iso, or set SOURCE_ISO=/path/to.iso (never auto-downloaded)"
+    log "using source ISO: $SOURCE_ISO"
+}
+resolve_virtio_iso() {
+    if [ -n "${VIRTIO_ISO:-}" ] && [ -f "$VIRTIO_ISO" ]; then return; fi
+    for c in "$IMAGES/virtio-win.iso" "$STORAGE/virtio-win.iso"; do
+        [ -f "$c" ] && { VIRTIO_ISO="$c"; return; }
+    done
+    VIRTIO_ISO="$STORAGE/virtio-win.iso"
+    log "downloading virtio-win drivers -> $VIRTIO_ISO"
+    curl -fL -C - -A "$UA" -o "$VIRTIO_ISO" "$VIRTIO_URL" || die "virtio-win download failed"
+}
+
+# Guard against LANGUAGE / IMAGE_INDEX that the source ISO can't satisfy (which would make the
+# unattended install fail or loop). An out-of-range index is fatal; an unavailable UI language
+# falls back to the image default so the install still completes. Needs wiminfo (wimtools);
+# silently skipped if absent.
+validate_image() {
+    local work="$1" wim want avail def maxidx
+    case "$IMAGE_INDEX" in ''|*[!0-9]*) die "IMAGE_INDEX must be a number (got '$IMAGE_INDEX')";; esac
+    command -v wiminfo >/dev/null 2>&1 || { log "WARN: wiminfo unavailable -> skip image/language check (install wimtools to enable)"; return 0; }
+    wim="$(find "$work/sources" -maxdepth 1 \( -iname install.wim -o -iname install.esd \) 2>/dev/null | head -1)"
+    [ -n "$wim" ] || { log "WARN: no install.wim/esd in source ISO -> skip validation"; return 0; }
+
+    maxidx="$(wiminfo "$wim" 2>/dev/null | sed -n 's/^Index:[[:space:]]*//p' | sort -n | tail -1)"
+    [ -n "$maxidx" ] && [ "$IMAGE_INDEX" -gt "$maxidx" ] \
+        && die "IMAGE_INDEX=$IMAGE_INDEX out of range; this ISO has editions 1..$maxidx"
+
+    want="$(locale_code "$LANGUAGE")"
+    avail="$(wiminfo "$wim" "$IMAGE_INDEX" 2>/dev/null | sed -n 's/^Languages:[[:space:]]*//p')"
+    def="$(wiminfo "$wim" "$IMAGE_INDEX" 2>/dev/null | sed -n 's/^Default Language:[[:space:]]*//p')"
+    [ -n "$avail" ] || { log "WARN: cannot read image languages -> proceed with '$want'"; return 0; }
+    if printf '%s' "$avail" | grep -qiw -- "$want"; then
+        log "language OK: '$want' present (image index $IMAGE_INDEX languages: $avail)"
+    else
+        log "WARN: UI language '$want' NOT in this ISO (available: $avail)"
+        log "WARN: falling back to image default '${def:-en-US}' to avoid an install language mismatch (REGION/KEYBOARD unchanged)"
+        LANGUAGE="${def:-en-US}"
+    fi
+    return 0
+}
+
+# Render autounattend.xml from the template with awk. Values are substituted literally
+# (index/substr, no regex) and XML-escaped, so any character in USERNAME/PASSWORD is safe.
+render_autounattend() {
+    local out="$1"
+    AU_USERNAME="$USERNAME" AU_PASSWORD="$PASSWORD" \
+    AU_UILANG="$(locale_code "$LANGUAGE")" \
+    AU_USERLOCALE="$(locale_code "$REGION")" \
+    AU_INPUTLOCALE="$(locale_code "$KEYBOARD")" \
+    AU_INDEX="$IMAGE_INDEX" \
+    awk '
+        function lrep(s, find, repl,   o, p) {
+            o = ""
+            while ((p = index(s, find)) > 0) { o = o substr(s, 1, p-1) repl; s = substr(s, p + length(find)) }
+            return o s
+        }
+        function xmlesc(s) {
+            gsub(/&/, "\\&amp;",  s)
+            gsub(/</, "\\&lt;",   s)
+            gsub(/>/, "\\&gt;",   s)
+            gsub(/"/, "\\&quot;", s)
+            return s
+        }
+        BEGIN {
+            u  = xmlesc(ENVIRON["AU_USERNAME"]); p = xmlesc(ENVIRON["AU_PASSWORD"])
+        }
+        {
+            l = $0
+            l = lrep(l, "@USERNAME@",    u)
+            l = lrep(l, "@PASSWORD@",    p)
+            l = lrep(l, "@UILANG@",      ENVIRON["AU_UILANG"])
+            l = lrep(l, "@SYSLOCALE@",   ENVIRON["AU_UILANG"])
+            l = lrep(l, "@USERLOCALE@",  ENVIRON["AU_USERLOCALE"])
+            l = lrep(l, "@INPUTLOCALE@", ENVIRON["AU_INPUTLOCALE"])
+            l = lrep(l, "@IMAGE_INDEX@", ENVIRON["AU_INDEX"])
+            print l
+        }
+    ' "$CONFIG_DIR/autounattend.xml.tmpl" > "$out"
+}
+
+prepare_iso() {
+    [ -f "$AUTO_ISO" ] && [ "$FORCE" != 1 ] && { log "unattended ISO exists: $AUTO_ISO"; return; }
+    resolve_source_iso; resolve_virtio_iso
+    local work="$BUILD_DIR/isobuild"; rm -rf "$work"; mkdir -p "$work"
+    log "extracting $(basename "$SOURCE_ISO") ..."
+    7z x -y -o"$work" "$SOURCE_ISO" >/dev/null || die "ISO extract failed"
+
+    validate_image "$work"          # may adjust LANGUAGE to avoid an ISO/language mismatch
+
+    log "autounattend: user=$USERNAME lang=$(locale_code "$LANGUAGE") region=$(locale_code "$REGION") kbd=$(locale_code "$KEYBOARD") index=$IMAGE_INDEX"
+    render_autounattend "$work/autounattend.xml"
+
+    log "injecting virtio drivers (\$WinpeDriver\$) ..."
+    local drv="$work/\$WinpeDriver\$"; mkdir -p "$drv"; local d
+    for d in viostor vioscsi NetKVM Balloon vioserial viorng pvpanic viogpudo; do
+        7z x -y -o"$drv" "$VIRTIO_ISO" "$d/w11/amd64/*" >/dev/null 2>&1 || true
+    done
+
+    local etfs uefi vid
+    etfs="$(cd "$work" && find . -ipath './boot/etfsboot.com' | head -1 | sed 's|^\./||')"
+    # Prefer the no-prompt UEFI boot image so setup boots straight from CD without a "Press any key to
+    # boot from CD or DVD" keypress — the runtime image ships no socat/QMP helper to send one. Fall
+    # back to efisys.bin only if the ISO lacks the no-prompt variant.
+    uefi="$(cd "$work" && find . -ipath './efi/microsoft/boot/efisys_noprompt.bin' | head -1 | sed 's|^\./||')"
+    [ -n "$uefi" ] || uefi="$(cd "$work" && find . -ipath './efi/microsoft/boot/efisys.bin' | head -1 | sed 's|^\./||')"
+    [ -n "$etfs" ] && [ -n "$uefi" ] || die "boot images not found in source ISO"
+    vid="$(7z l -slt "$SOURCE_ISO" 2>/dev/null | awk -F'= ' '/Volume Label/{print $2; exit}')"; vid="${vid:-WIN11LTSC}"
+    log "mastering $AUTO_ISO ..."
+    xorriso -as mkisofs -iso-level 3 -full-iso9660-filenames -J -joliet-long -R \
+        -volid "$vid" \
+        -b "$etfs" -no-emul-boot -boot-load-size 8 -boot-info-table \
+        -eltorito-alt-boot -e "$uefi" -no-emul-boot \
+        -o "$AUTO_ISO" "$work" >/dev/null 2>&1 || die "xorriso failed"
+    rm -rf "$work"
+    log "unattended ISO ready: $AUTO_ISO"
+}
+
+# ------------------------------------------------------------------ main ----
+log "=== win11 install ==="
+st=$([ -f "$INSTALL_STATE" ] && head -n1 "$INSTALL_STATE" 2>/dev/null || true)
+if [ "$FORCE" != 1 ]; then
+    if [ "$st" = installed ]; then
+        log "already installed (status=installed). Set FORCE=1 to rebuild. Nothing to do."; exit 0
+    fi
+    if [ -z "$st" ] && [ -f "$DISK" ]; then
+        log "existing disk with no record -> treating as installed. Set FORCE=1 to rebuild. Nothing to do."
+        printf 'installed\n# migrated: pre-existing disk\n' > "$INSTALL_STATE"; exit 0
+    fi
+    [ "$st" = installing ] && { log "previous install was interrupted (status=installing) -> rebuilding"; rm -f "$DISK"; }
+fi
+[ "$FORCE" = 1 ] && rm -f "$DISK" "$INSTALL_STATE"
+
+mkdir -p "$(dirname "$DISK")" "$BUILD_DIR"
+prepare_iso
+load_conf
+[ -f "$DISK" ] || { log "creating disk $DISK ($DISK_SIZE)"; qemu-img create -f qcow2 "$DISK" "$DISK_SIZE" >/dev/null; }
+detect_kvm; ACCEL=(-machine "${MACHINE},accel=$ACCEL_MODE" -cpu "$CPU_MODEL"); setup_firmware; build_vnc_args
+rm -f "$MONITOR"                  # drop a stale monitor socket left by an unclean previous exit
+{ echo installing; echo "# started $(date -u +%FT%TZ 2>/dev/null) lang=$(locale_code "$LANGUAGE")"; } > "$INSTALL_STATE"
+
+# Lean install-only device model: OVMF + virtio-blk + AHCI(CD) + rng + plain VGA. No TPM
+# (autounattend bypasses the check), no NIC (OOBE stays offline = faster), no balloon/USB.
+# cache=unsafe drops fsync during file expansion; the disk is disposable until install ends.
+log "lean unattended install starting (watch http://<host>:${WEB_PORT}/) ; VM powers off when done"
+start=$SECONDS
+# shellcheck disable=SC2086
+qemu-system-x86_64 \
+    "${ACCEL[@]}" -smp "$CPU_CORES" -m "$RAM_SIZE" -rtc base=localtime \
+    -drive "if=pflash,format=raw,unit=0,readonly=on,file=$CODE" \
+    -drive "if=pflash,format=raw,unit=1,file=$VARS" \
+    -device virtio-rng-pci \
+    -device ich9-ahci,id=ahci \
+    -device VGA "${VNC_ARGS[@]}" \
+    -nic none \
+    -monitor "unix:$MONITOR,server,nowait" -name windows \
+    $EXTRA_ARGS \
+    -drive "file=$DISK,if=none,id=disk0,format=qcow2,cache=unsafe" \
+    -device virtio-blk-pci,drive=disk0,bootindex=1 \
+    -drive "file=$AUTO_ISO,if=none,id=cd0,media=cdrom" \
+    -device ide-cd,drive=cd0,bus=ahci.1,bootindex=2 &
+QPID=$!
+# No "Press any key to boot from CD" keypress needed: the ISO is mastered with efisys_noprompt.bin,
+# so UEFI boots setup directly (the runtime image has no socat/QMP helper to send a key).
+# Only a clean ACPI poweroff reaches this point; that path is gated by the autounattend's final
+# FirstLogonCommands (write marker -> shutdown /s), so a clean exit means setup ran to the end.
+rc=0; wait "$QPID" || rc=$?
+rm -f "$MONITOR"
+elapsed=$((SECONDS - start))
+[ "$rc" -eq 0 ] || die "install VM exited non-zero (rc=$rc) after ${elapsed}s — setup did not complete; status left 'installing' (it will retry)"
+[ "$elapsed" -ge "$MIN_INSTALL_SECS" ] || die "install VM powered off after only ${elapsed}s (< ${MIN_INSTALL_SECS}s) — setup never ran (unbootable/wrong ISO?); status left 'installing'"
+{ echo installed; echo "# completed $(date -u +%FT%TZ 2>/dev/null) in ${elapsed}s lang=$(locale_code "$LANGUAGE")"; } > "$INSTALL_STATE"
+log "install finished in ${elapsed}s -> $DISK"
+log "start/restart the container to boot it (the 'win11' service boots this disk directly)."

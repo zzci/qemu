@@ -1,0 +1,487 @@
+/* Design tokens mirror the VM Console mockup (#0a0e14 base), using system fonts (no web fonts). */
+
+:root {
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: #0a0e14;
+  color: #e6edf3;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+/* ---- home view -------------------------------------------------------- */
+
+.home {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  gap: 34px;
+}
+
+.home-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.name-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.icon-box {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: linear-gradient(145deg, #1b2430, #111721);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+}
+.vm-name {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 13px 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+}
+.pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6e7681;
+}
+.pill-text {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #9aa5b1;
+}
+.pill.running {
+  background: rgba(63, 185, 80, 0.1);
+  border-color: rgba(63, 185, 80, 0.3);
+}
+.pill.running .pill-dot {
+  background: #3fb950;
+  box-shadow: 0 0 8px #3fb950;
+}
+.pill.running .pill-text {
+  color: #7ee092;
+}
+.pill.warn {
+  background: rgba(210, 153, 34, 0.1);
+  border-color: rgba(210, 153, 34, 0.35);
+}
+.pill.warn .pill-dot {
+  background: #d29922;
+  box-shadow: 0 0 8px #d29922;
+}
+.pill.warn .pill-text {
+  color: #e3b341;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  overflow: hidden;
+  width: 100%;
+  max-width: 760px;
+}
+.stat {
+  background: #0e131b;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stat-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #7d8794;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.stat-value {
+  font-size: 15px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: #cdd6e0;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  max-width: 760px;
+}
+.primary-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.divider {
+  height: 1px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.07);
+  margin: 2px 0;
+}
+.power-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.emoji {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.btn {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 13px 26px;
+  border-radius: 11px;
+  font-size: 14.5px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.12s;
+}
+.btn .emoji {
+  font-size: 16px;
+}
+.btn-vnc {
+  border: 1px solid rgba(88, 166, 255, 0.35);
+  background: linear-gradient(180deg, rgba(88, 166, 255, 0.22), rgba(88, 166, 255, 0.1));
+  color: #cfe3ff;
+}
+.btn-vnc:hover {
+  background: linear-gradient(180deg, rgba(88, 166, 255, 0.32), rgba(88, 166, 255, 0.16));
+  border-color: rgba(88, 166, 255, 0.55);
+}
+.btn-serial {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #141a23;
+  color: #d5dde6;
+}
+.btn-serial:hover {
+  background: #1a212c;
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.btn-power {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 18px;
+  border-radius: 9px;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.12s;
+}
+.btn-power .emoji {
+  font-size: 14px;
+}
+.btn-power:hover {
+  filter: brightness(1.25);
+}
+.p-start {
+  border: 1px solid rgba(63, 185, 80, 0.3);
+  background: rgba(63, 185, 80, 0.12);
+  color: #7ee092;
+}
+.p-neutral {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #141a23;
+  color: #d5dde6;
+}
+.p-danger {
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  background: rgba(248, 81, 73, 0.1);
+  color: #ff9d97;
+}
+
+/* ---- details panel (port forwards, launch command, meta) -------------- */
+
+.details {
+  width: 100%;
+  max-width: 760px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 14px;
+  background: #0e131b;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.detail-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #7d8794;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.fwd-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.fwd-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  background: #141a23;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: #cdd6e0;
+}
+.fwd-chip .arrow {
+  color: #58a6ff;
+}
+.fwd-chip .proto {
+  color: #7d8794;
+  font-size: 11px;
+}
+.fwd-empty {
+  font-size: 13px;
+  color: #7d8794;
+}
+.cmd {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 9px;
+  background: #0a0e14;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: #b9c4d0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 132px;
+  overflow: auto;
+}
+.meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 20px;
+}
+.meta-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.meta-k {
+  font-size: 12px;
+  color: #7d8794;
+  white-space: nowrap;
+}
+.meta-v {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #cdd6e0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toast {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(22, 29, 39, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #c8d2dd;
+  font-size: 12.5px;
+  font-family: var(--font-mono);
+  backdrop-filter: blur(6px);
+  z-index: 20;
+}
+
+/* ---- console view (VNC / serial) -------------------------------------- */
+
+.console {
+  height: 100vh;
+  width: 100vw;
+  background: #000;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Floating overlay: it sits above the canvas and slides out of view when hidden, so toggling it
+   never changes the console's size (the canvas stays put — no jump). */
+.toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: linear-gradient(180deg, rgba(18, 23, 31, 0.92), rgba(13, 18, 25, 0.82));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(8px);
+  z-index: 10;
+  transition: transform 0.22s ease, opacity 0.22s ease;
+}
+.toolbar.hidden {
+  transform: translateY(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+.spacer {
+  flex: 1;
+}
+.tbtn {
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #161d27;
+  color: #c8d2dd;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.12s;
+}
+.tbtn:hover {
+  background: #1c2530;
+}
+.tbtn.back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  font-size: 13px;
+}
+.conn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 2px;
+}
+.kind {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #9aa5b1;
+  font-family: var(--font-mono);
+}
+.conn-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6e7681;
+}
+.conn-dot.ok {
+  background: #3fb950;
+}
+.conn-dot.wait {
+  background: #d29922;
+}
+.conn-dot.err {
+  background: #f85149;
+}
+.conn-text {
+  font-size: 12px;
+  color: #7d8794;
+}
+
+/* The panel fills the whole console; the toolbar floats over it, so its size is fixed. */
+.vnc-surface {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  background: #000;
+}
+.vnc-surface > div {
+  flex: 1;
+}
+.term-surface {
+  position: absolute;
+  inset: 0;
+  padding: 8px 10px;
+  background: #000;
+}
+
+/* language switch (home header + console toolbar) */
+.head-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.lang-switch {
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: #c9d1d9;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.lang-switch:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.25);
+}

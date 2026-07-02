@@ -1,0 +1,23 @@
+name: qemu
+services:
+  # One image, one service (vmd) — it owns QEMU + swtpm + the web console/power API. Guests and all
+  # their parameters are declared in vmd.toml; pick one with VMD_OS.
+  vm:
+    build: .
+    image: zzci/qemu
+    container_name: qemu
+    restart: unless-stopped
+    stop_grace_period: 3m       # let the guest ACPI-shut down before SIGKILL
+    devices:
+      - /dev/kvm
+      # - /dev/net/tun          # uncomment for a bridge/macvlan netdev in vmd.toml
+    environment:
+      ZSRV_vmd: "true"          # enable the single vmd service (nothing starts unless enabled)
+      VMD_OS: "win11"           # which [guest.X] in vmd.toml to boot (win11 | alpine | …)
+    volumes:
+      - ./storage:/storage                          # persistent state (also where vmd.toml can live)
+      - ./images:/images:ro                         # your ISOs: images/win11.iso, images/virtio-win.iso
+      - ./supervisor/vmd.toml:/storage/vmd.toml:ro  # your config (overrides the baked /etc/vmd/vmd.toml)
+    ports:
+      - "8006:8006"             # web console at / (VNC + serial console + power controls)
+      - "3389:3389"             # Windows RDP (forwarded by the user-net in vmd.toml)

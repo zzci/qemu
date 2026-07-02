@@ -1,0 +1,27 @@
+[package]
+name = "vmd"
+version = "0.1.0"
+edition = "2021"
+description = "QEMU VM supervisor: process lifecycle, QMP control, noVNC + serial console bridge"
+license = "MIT"
+
+[[bin]]
+name = "vmd"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "net", "io-util", "time", "sync", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+axum = { version = "0.7", features = ["ws"] }
+futures-util = "0.3"
+include_dir = "0.7"   # embed the built web console (ui/dist) into the binary at compile time
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"

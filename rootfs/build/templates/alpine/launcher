@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Simple Linux launcher template (SeaBIOS, no TPM/UEFI), `launch = "alpine"`: copied to
+# {dir}/scripts/ on first boot; placeholders arrive as VMD_<KEY>.
+set -euo pipefail
+
+exec qemu-system-x86_64 \
+    -machine "q35,accel=${VMD_ACCEL}" -cpu "${VMD_CPU}" -smp "${VMD_CPUS}" -m "${VMD_RAM}" \
+    -uuid "${VMD_UUID}" -name "${VMD_NAME}" -no-user-config -nodefaults \
+    -device virtio-rng-pci -device VGA -vnc "unix:${VMD_VNC_SOCK}" \
+    -netdev user,id=net0,hostfwd=tcp::2222-:22 -device "virtio-net-pci,netdev=net0,mac=${VMD_MAC}" \
+    -serial "unix:${VMD_CONSOLE_SOCK},server,nowait" -monitor none \
+    -drive "file=${VMD_DISK},if=none,id=disk0,format=qcow2,cache=writeback" \
+    -device virtio-blk-pci,drive=disk0,bootindex=1 \
+    -qmp "unix:${VMD_QMP},server,nowait"

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Alpine install (copied to {dir}/scripts/install; run by the vmd install gate): fetch the official
+# Alpine cloud image and turn it into the guest disk. Disk/size arrive as VMD_DISK / VMD_DISK_SIZE;
+# optional URL / ALPINE_MIRROR come from [guest.x.install] keys. FORCE=1 rebuilds.
+set -euo pipefail
+LOG_TAG=install
+source /build/bin/qemu-common.sh
+
+URL="${URL:-}"
+DISK="${VMD_DISK:?VMD_DISK not set}"
+SIZE="${VMD_DISK_SIZE:-}"
+[ "${FORCE:-0}" = 1 ] && rm -f "$DISK"
+[ -f "$DISK" ] && { log "disk exists: $DISK — nothing to do (FORCE=1 rebuilds)"; exit 0; }
+
+MIRROR="${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/cloud}"
+if [ -z "$URL" ]; then
+    # newest x86_64 BIOS tiny-cloud VM image from the mirror's directory index
+    file="$(curl -fsSL "$MIRROR/" | grep -oE 'generic_alpine-[0-9.]+-x86_64-bios-tiny-r[0-9]+\.qcow2' | sort -uV | tail -1)"
+    [ -n "$file" ] || die "could not resolve an alpine cloud image at $MIRROR/"
+    URL="$MIRROR/$file"
+fi
+
+mkdir -p "$(dirname "$DISK")"
+tmp="$DISK.download"
+log "downloading $URL"
+curl -fL -C - -o "$tmp" "$URL" || die "download failed: $URL"
+qemu-img convert -O qcow2 "$tmp" "$DISK"
+rm -f "$tmp"
+[ -n "$SIZE" ] && qemu-img resize "$DISK" "$SIZE" >/dev/null
+log "alpine disk ready: $DISK${SIZE:+ (resized to $SIZE)}"

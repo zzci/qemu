@@ -1,0 +1,8 @@
+# keep the build context small; don't ship local build/runtime artifacts
+supervisor/target
+supervisor/ui/node_modules
+supervisor/ui/dist
+storage
+images
+**/.git
+**/core

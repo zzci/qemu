@@ -1,0 +1,61 @@
+# vmd configuration. vmd is OS-agnostic: guests are pure config; adding a system = a template
+# folder + a [guest.<name>] block. Search order: $VMD_CONFIG -> /vms/vmd.toml -> /etc/vmd/vmd.toml
+# (this file; auto-seeded to /vms/vmd.toml on first run). Active guest: $VMD_OS, else `default`.
+#
+# `dir` = the guest's home: disk, state (OVMF/TPM/UUID/sockets), logs and scripts/ live under it.
+# Relative `disk` resolves under `dir`; omitted -> {dir}/disk.qcow2.
+#
+# `launch` = a bare NAME (template folder $VMD_TEMPLATES/<name>/, copied to {dir}/scripts/ on first
+# boot, user edits win) or a PATH (custom launcher, copied to {dir}/scripts/launcher).
+#
+# Scripts get every placeholder as VMD_<KEY>: ACCEL CPU CPUS RAM NAME UUID MAC STATE DIR DISK
+# DISK_SIZE VNC_SOCK QMP CONSOLE_SOCK TPM_SOCK WEB_PORT. The launcher MUST use
+# `-qmp unix:$VMD_QMP,server,nowait`. VNC/console are unix sockets (no TCP, no VNC password);
+# the web layer is the access gate. Inline `qemu = "..."` is still supported instead of `launch`.
+#
+# [guest.<name>.install] gates first-boot installation: `policy` (auto|force|none), optional
+# `launch` (install script, resolved like the guest launcher; defaults to the guest's template),
+# and every other key becomes an UPPERCASE env var for the script. Disk/size come from the guest.
+
+default = "win11"
+stop_grace_secs = 150
+
+[web]
+port = 8006
+# allowed_origins = ["https://qemu.example.com"]   # extra Origins for the CSRF/WS guard
+# password = "change-me"                           # web access password; empty/absent = no auth
+
+# ---- Windows 11 -----------------------------------------------------------------
+[guest.win11]
+dir       = "/vms/win11"
+disk      = "windows.qcow2"
+disk_size = "128G"
+ram       = "4G"
+cpus      = 2
+launch    = "win11"            # template folder -> {dir}/scripts/ (editable)
+tpm       = true               # built-in vTPM 2.0 (swtpm managed by vmd)
+seed      = [ { template = "/usr/share/OVMF/OVMF_VARS_4M.fd", to = "{state}.OVMF_VARS.fd" } ]
+
+[guest.win11.install]
+policy      = "auto"
+source_iso  = "/images/win11.iso"
+virtio_iso  = "/images/virtio-win.iso"
+username    = "docker"
+password    = "admin"
+language    = "en-US"
+image_index = 1
+
+# `sidecars` runs extra programs/scripts next to the VM (VMD_<KEY> env; optional ready-path):
+# sidecars = [ { command = "{dir}/scripts/net-setup", wait_for = "/run/vmd-net.ready" } ]
+
+# ---- Alpine (Linux) ---------------------------------------------------------------
+[guest.alpine]
+dir       = "/vms/alpine"
+disk      = "alpine.qcow2"
+disk_size = "8G"
+ram       = "2G"
+cpus      = 2
+launch    = "alpine"
+
+[guest.alpine.install]
+policy = "auto"    # fetches the official Alpine cloud image (see {dir}/scripts/install)

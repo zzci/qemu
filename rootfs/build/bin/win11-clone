@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Clone the installed Windows disk so you can spin up more VMs without reinstalling.
+#
+#   win11-clone <name>           linked clone  (fast, copy-on-write over a sealed golden base)
+#   win11-clone <name> --full    full clone    (independent standalone copy)
+#
+# Each clone gets its own per-disk firmware/TPM/monitor state automatically (derived from the
+# disk path by start-win11), so clones can run as separate containers off the same /storage.
+# log/die come from qemu-common.sh.
+set -euo pipefail
+LOG_TAG=clone
+source /build/bin/qemu-common.sh
+
+: "${STORAGE:=/vms}"
+: "${DISK:=${VMD_DISK:-$STORAGE/win11/windows.qcow2}}"
+
+name="${1:-}"; mode="${2:-}"
+[ -n "$name" ] || die "usage: win11-clone <name> [--full]"
+[ -f "$DISK" ] || die "no installed disk at $DISK — install it first (vmd install gate)"
+
+mkdir -p "$STORAGE/win11/clones"
+out="$STORAGE/win11/clones/$name.qcow2"
+[ -e "$out" ] && die "clone already exists: $out"
+
+if [ "$mode" = "--full" ]; then
+    log "full clone: $DISK -> $out"
+    qemu-img convert -O qcow2 "$DISK" "$out"
+else
+    base="$STORAGE/win11/base.qcow2"
+    if [ ! -f "$base" ]; then
+        log "sealing one-time golden base: $base (read-only)"
+        qemu-img convert -O qcow2 "$DISK" "$base"
+        chmod 0444 "$base"
+    fi
+    log "linked clone over $base -> $out"
+    qemu-img create -f qcow2 -F qcow2 -b "$base" "$out" >/dev/null
+fi
+
+log "clone ready: $out"
+cat <<EOF
+
+Run this clone as its own container: add a [guest.$name] block to /vms/vmd.toml pointing
+disk at $out (install.policy = "none"), then:
+
+  docker run -d --name win11-$name --device=/dev/kvm \\
+    -e ZSRV_vmd=true -e VMD_OS=$name -p 8006:8006 \\
+    -v "$STORAGE:/vms" <image>
+
+Note: clones share the source's machine SID/hostname (no sysprep). Fine for labs;
+for unique identities run 'sysprep /generalize' inside Windows before cloning.
+EOF
