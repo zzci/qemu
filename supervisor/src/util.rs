@@ -1,18 +1,7 @@
-//! Small helpers: firmware/file resolution, stable per-VM MAC, persistent UUID.
+//! Small helpers: stable per-VM MAC, session token, persistent UUID.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-
-/// First of `cands` that exists, else an error listing them.
-pub fn first_existing(cands: &[&str]) -> Result<PathBuf> {
-    for c in cands {
-        let p = Path::new(c);
-        if p.exists() {
-            return Ok(p.to_path_buf());
-        }
-    }
-    bail!("none of these files exist: {}", cands.join(", "))
-}
 
 /// Stable guest MAC from the disk path (FNV-1a), so restarts keep their DHCP lease.
 pub fn gen_mac(disk: &Path, idx: u8) -> String {
@@ -42,9 +31,7 @@ pub fn get_or_create_uuid(state_stem: &str) -> Result<String> {
             return Ok(s);
         }
     }
-    let uuid = std::fs::read_to_string("/proc/sys/kernel/random/uuid")?
-        .trim()
-        .to_string();
+    let uuid = std::fs::read_to_string("/proc/sys/kernel/random/uuid")?.trim().to_string();
     std::fs::write(&path, format!("{uuid}\n"))?;
     Ok(uuid)
 }

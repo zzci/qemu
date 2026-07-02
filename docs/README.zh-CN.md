@@ -2,23 +2,23 @@
 
 [English](./README.md) · **中文**
 
-`zzci/qemu` 引擎的深入指南,分为**系统无关**(引擎本身,所有客户机共用)与**每客户机**(每个 `OS` 一篇)。
-请先看[根 README](../README.zh-CN.md) 了解概览。每份指南都有英文版与中文版(`*.zh-CN.md`),顶部互相链接。
+`zzci/qemu` 引擎的深入指南,分为**系统无关**(vmd 引擎,所有客户机共用)与**按客户机**
+(每个 `VMD_OS` 一篇)。总览请先看[根 README](../README.zh-CN.md)。每篇都有英文版与中文版
+(`*.zh-CN.md`),顶部互链。
 
 ## 通用(系统无关)
 
 | 指南 | 内容 |
 |------|------|
-| [common/engine.zh-CN.md](./common/engine.zh-CN.md) | 引擎本身 —— 分派(`start-vm`)、服务与控制台、KVM、每机配置/状态约定、存储布局,以及**如何新增客户机**。 |
-| [common/networking-and-devices.zh-CN.md](./common/networking-and-devices.zh-CN.md) | 网络模式、USB 直通、串口,以及 `EXTRA_ARGS` 万能逃生口 —— 附对应的 `docker` 设备/权限参数。 |
+| [common/engine.zh-CN.md](./common/engine.zh-CN.md) | vmd 引擎 —— 配置(`vmd.toml`、占位符、`VMD_*` 环境变量)、模板脚本与 `{dir}/scripts`、安装把关、电源生命周期、Web 控制台与 API、安全。 |
+| [common/networking-and-devices.zh-CN.md](./common/networking-and-devices.zh-CN.md) | 网络模式(用户态/NAT、桥接/tap、macvlan、多网卡)、串口映射(控制台 / TCP / 宿主设备)、USB 直通、额外磁盘、显示、声音。 |
 
-## 客户机(每系统)
+## 客户机(按系统)
 
 | 指南 | 内容 |
 |------|------|
-| [guests/windows.zh-CN.md](./guests/windows.zh-CN.md) | Windows 11 LTSC —— 安装策略与安装状态、ISO、语言/版本、显示(`std`→`virtio`)、账号/RDP、存储与每机配置、克隆、排错。 |
-| [guests/alpine.zh-CN.md](./guests/alpine.zh-CN.md) | Alpine Linux —— 控制台安装、环境变量,以及新增客户机的最简模板。 |
+| [guests/windows.zh-CN.md](./guests/windows.zh-CN.md) | Windows 11 —— 无人值守安装(`[guest.win11.install]` 键)、安装脚本流程、RDP、克隆、排障。 |
+| [guests/alpine.zh-CN.md](./guests/alpine.zh-CN.md) | Alpine Linux —— 零介质云镜像安装、串口控制台、最简模板。 |
 
-**要新增一个系统?** 读 [common/engine.zh-CN.md → 新增客户机](./common/engine.zh-CN.md#新增客户机):
-写一个 `start-<os>` 脚本,在 `start-vm` 里加一个分支,再加 `docs/guests/<os>.md`。上面的通用文档已经覆盖
-所有与客户机无关的内容。
+**新增系统?**见 [CONTRIBUTING.md](./CONTRIBUTING.md):建一个模板文件夹(`launcher` + 可选
+`install`),加一个 `[guest.<name>]` 块即可 —— 无需改引擎。

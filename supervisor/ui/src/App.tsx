@@ -121,9 +121,11 @@ export default function App() {
             <button className="btn btn-vnc" onClick={() => open('vnc')}>
               <span className="emoji">🖥️</span> {t('openVnc')}
             </button>
-            <button className="btn btn-serial" onClick={() => open('serial')}>
-              <span className="emoji">⌨️</span> {t('openSerial')}
-            </button>
+            {(vm?.console ?? true) && (
+              <button className="btn btn-serial" onClick={() => open('serial')}>
+                <span className="emoji">⌨️</span> {t('openSerial')}
+              </button>
+            )}
           </div>
 
           <div className="divider" />

@@ -1,204 +1,85 @@
-# Windows 11 guest (`OS=win11`)
+# Windows 11 guest (`VMD_OS=win11`)
 
 **English** · [中文](./windows.zh-CN.md)
 
-Run **Windows 11 Enterprise LTSC** on the `zzci/qemu` engine: a fully unattended install
-(no clicks), virtio drivers slipstreamed, TPM 2.0 + UEFI, then boot straight from disk.
+Fully unattended **Windows 11** install and operation: provide an ISO, first boot installs
+(~13 min with KVM), every later boot goes straight to Windows. UEFI (OVMF) + vTPM 2.0 + virtio
+disk/net (drivers slipstreamed), RDP enabled, deterministic ACPI shutdown.
 
-> **Why LTSC?** Windows 11 IoT Enterprise LTSC ships without Store / Copilot / consumer apps /
-> Teams / widgets — already close to a "tiny11" image, more stable, and longer-serviced.
+## Requirements
 
-See the [root README](../../README.md) for the engine overview and quick start. This page is the
-in-depth Windows guide.
+- `images/win11.iso` mounted at **`/images/win11.iso`** — a Windows 11 ISO you provide (LTSC
+  recommended; never auto-downloaded).
+- `/images/virtio-win.iso` optional — downloaded from Fedora automatically if absent.
+- `--device=/dev/kvm`.
 
----
+## Configuration
 
-## How it works
+```toml
+[guest.win11]
+dir       = "/vms/win11"
+disk      = "windows.qcow2"
+disk_size = "128G"              # sparse; grows on demand
+ram       = "4G"
+cpus      = 2
+launch    = "win11"
+tpm       = true
+seed      = [ { template = "/usr/share/OVMF/OVMF_VARS_4M.fd", to = "{state}.OVMF_VARS.fd" } ]
 
-Two scripts own the Windows lifecycle (sharing the `qemu-common.sh` helpers):
-
-| Script | Phase | Device model |
-|--------|-------|--------------|
-| `win11-installer` | one-shot install | Lean & disposable: OVMF + virtio-blk + AHCI(CD) + rng + plain VGA, **no TPM/NIC/balloon**, `cache=unsafe` for speed. Repacks your ISO (slipstream virtio + `autounattend.xml`) in `/tmp/win11-build`, installs into `windows.qcow2`, records the result, powers off. |
-| `start-win11` | every boot | The **full** runtime model from a generated `-readconfig` file: TPM 2.0, virtio-blk/net, balloon, rng, USB (xhci + tablet), display. |
-
-`start-win11` renders the static machine topology into `/storage/win11/windows.qemu.conf` and
-launches QEMU with `-readconfig`; only dynamic / non-config-group args (`-cpu`, display, monitor,
-identity, networking, USB, the data disk) stay on the command line.
-
-The **TPM 2.0** itself is `swtpm`, run as the separate **`tpm` service** (not by `start-win11`), so
-it is independently controllable (`sctl start|stop|restart tpm`) and reusable by other guests.
-`start-win11` waits for the vTPM socket before booting and fails fast if it never comes up — see
-[common/engine.md → vTPM](../common/engine.md#vtpm-the-tpm-service). The install runs **without** a
-TPM (the `autounattend.xml` bypasses the check); the vTPM only attaches at runtime.
-
----
-
-## Provide the ISO
-
-The Windows ISO is **never auto-downloaded** (Microsoft eval URLs expire). Mount your own at
-`/images/win11.iso`, or point `SOURCE_ISO` at any path (`-e SOURCE_ISO=/path/to.iso`):
-
-```yaml
-volumes:
-  - ./images/Win11_LTSC_zh-cn.iso:/images/win11.iso:ro   # your ISO, surfaced as win11.iso
-  - ./images/virtio-win.iso:/images/virtio-win.iso:ro    # virtio drivers (else auto-downloaded)
+[guest.win11.install]
+policy      = "auto"            # auto | force | none
+source_iso  = "/images/win11.iso"
+virtio_iso  = "/images/virtio-win.iso"
+username    = "docker"          # local admin created by the unattend
+password    = "admin"
+language    = "en-US"           # UI language; must exist in the ISO (validated, auto-falls back)
+region      = "en-US"           # user locale (optional; defaults to language)
+keyboard    = "en-US"           # input locale (optional; defaults to language)
+image_index = 1                 # install.wim edition index (1 = LTSC on the LTSC ISO)
+# virtio_sha256 = "<hex>"       # verify a downloaded virtio-win.iso (unverified when unset)
 ```
 
-Before mastering, the installer inspects the ISO with `wiminfo`:
+Install keys become UPPERCASE env vars for `{dir}/scripts/install`; `language` accepts friendly
+names too (`Chinese` → `zh-CN`). A zh-CN system: set `language/region/keyboard = "zh-CN"` and use
+a zh-CN ISO.
 
-- an out-of-range `IMAGE_INDEX` is **fatal** (it prints the valid `1..N` range);
-- if your `LANGUAGE` is not present in the image it **warns and falls back** to the image's
-  default language, so the install still completes instead of stalling on the language screen.
+## What the installer does
 
----
+`{dir}/scripts/install` (your editable copy) owns the whole pipeline:
 
-## Install policy & state — `WIN11_INSTALL`
+1. extract the source ISO; validate `image_index` and `language` against `install.wim`
+   (an unavailable language falls back to the image default instead of hanging setup);
+2. render `autounattend.xml` (accounts, locale, TPM/SecureBoot/RAM checks bypassed, RDP on,
+   telemetry trimmed, **hibernation off + power button = shutdown** for reliable ACPI control);
+3. slipstream virtio drivers (`$WinpeDriver$`); remaster a no-prompt UEFI ISO (boots without
+   "Press any key");
+4. run a lean throwaway install VM (`cache=unsafe`, no TPM/NIC) and wait for its clean power-off;
+5. write `{state}.install` = `installed`; vmd then boots the real device model.
 
-| Value | Behavior |
-|-------|----------|
-| `auto` | Install unless a completed install is recorded; also recovers an interrupted one. |
-| `force` | Wipe + reinstall **once** (marker-guarded: a guest restart never re-wipes). |
-| `none` (default) | Never auto-install; without a completed install, wait for a manual `win11-installer`. |
+Signals while installing: watch it live on the web console; the qcow2 grows; the vmd log prints
+`install finished in Ns`.
 
-The decision is gated by an **install-state file**, `/storage/win11/windows.install`, whose first
-line is `installing` or `installed`:
+## Access
 
-- `win11-installer` writes `installing` when it starts and `installed` only when the install
-  finishes — so a half-written disk is **not** mistaken for a working one.
-- `auto` installs whenever the status is not `installed` (fresh **or** interrupted); the boot guard
-  refuses to boot until the status is `installed`.
-- A disk that predates this file (no record) is **migrated** to `installed` on first contact, so
-  existing installs keep booting.
-- `force` reinstalls once and sets `windows.force-applied`; remove that marker (or run
-  `FORCE=1 win11-installer`) to force again.
+- **Web console** — `http://<host>:8006` (noVNC display + power controls).
+- **RDP** — port 3389 is forwarded by the launcher and enabled by the unattend
+  (`docker run -p 127.0.0.1:3389:3389`, log in as `username`/`password`).
+
+## Cloning
 
 ```bash
-docker exec <container> win11-installer        # manual install, skips if recorded installed
-FORCE=1 docker exec <container> win11-installer # rebuild from scratch
+docker exec <container> win11-clone <name>          # linked clone (copy-on-write, instant)
+docker exec <container> win11-clone <name> --full   # full standalone copy
 ```
 
----
-
-## Locale & edition
-
-`LANGUAGE` / `REGION` / `KEYBOARD` take a friendly name or an `xx-XX` code; all default to `en-US`.
-
-```yaml
-environment:
-  LANGUAGE: "Chinese"   # or zh-CN
-  REGION: "zh-CN"
-  KEYBOARD: "zh-CN"
-```
-
-> The chosen `LANGUAGE` must exist in the source ISO. An evaluation ISO is usually **en-US only**;
-> use a multi-language LTSC ISO for other languages.
-
-`IMAGE_INDEX` (default `1`) selects the `install.wim` edition; `1` is LTSC on the eval ISO.
-
----
-
-## Account & RDP
-
-`USERNAME` (default `docker`) / `PASSWORD` (default `admin`) are baked at install and are also the
-RDP credentials. In the default `user` network mode, RDP is forwarded by `PORT_FWD` (default
-`3389-3389`, i.e. host `3389` → guest `3389`); in `bridge`/`macvlan` the guest has its own LAN IP —
-RDP straight to it. See [networking-and-devices.md](../common/networking-and-devices.md).
-
----
-
-## Display: `std` to install, `virtio` to run
-
-The installer always uses **plain VGA (`std`)** — the simplest, always-works adapter for Windows
-Setup. The virtio-GPU driver (`viogpudo`) is slipstreamed during setup, so **after install you can
-switch the runtime display to `virtio`** for widescreen resolutions and noVNC auto-resize.
-
-```yaml
-environment:
-  VGA: "virtio"            # std | virtio | qxl
-  RESOLUTION: "1920x1080"  # forced via EDID; best with VGA=virtio
-```
-
-- `std` boots at 1024×768 with a few 4:3 modes only.
-- `virtio` + `RESOLUTION` gives a forced widescreen mode (applied a few seconds after the desktop
-  loads on an existing install).
-- The console may show **black** after the desktop loads — that is display sleep, not a hang; a
-  keypress wakes it (RDP/`3389` reachable confirms the guest is up).
-
-> An externally-built disk **without** the virtio-GPU driver can hang at the Windows Boot Manager
-> under `VGA=virtio`. Install with this engine (driver slipstreamed) or revert to `VGA=std`.
-
----
-
-## Storage & the per-VM config
-
-All Windows state lives under `storage/win11/` (one dir per guest); the repacked install ISO is a
-temporary artifact built in `/tmp/win11-build`, never in `/storage`.
-
-```
-storage/win11/
-├── windows.qcow2          # the OS disk
-├── windows.conf           # editable per-VM config (authoritative after first boot)
-├── windows.qemu.conf      # generated -readconfig topology (do not edit; regenerated each boot)
-├── windows.install        # install-state record (installing | installed)
-├── windows.OVMF_VARS.fd   # UEFI NVRAM
-└── windows.tpm/           # swtpm state
-```
-
-On first boot `start-win11` seeds `windows.conf` from the environment, then treats it as the source
-of truth — **edit it and restart** to change resources/networking/display:
-
-```ini
-# /storage/win11/windows.conf
-NAME=windows            # QEMU VM name (-name)
-UUID=…                  # SMBIOS system UUID (-uuid), auto-generated once, then stable
-CPU_CORES=4
-RAM_SIZE=8G
-MACHINE=q35
-DISK=/storage/win11/windows.qcow2
-NETWORK=user
-PORT_FWD=3389-3389      # user-mode host-guest forwards (e.g. 3389-3389,8080-80)
-VGA=virtio
-RESOLUTION=1920x1080
-USB=
-SERIAL=                 # host serial -> guest COM, TTY paths (e.g. /dev/ttyUSB0,/dev/ttyS0)
-EXTRA_ARGS=
-```
-
-A stable `UUID` is generated once and kept in the conf, so the guest's hardware identity
-(licensing/activation) is consistent across restarts; each clone gets its own. To re-seed the conf
-from the environment, delete the file and restart.
-
----
-
-## Clones
-
-```bash
-docker exec <container> win11-clone dev          # linked clone (copy-on-write over a sealed base)
-docker exec <container> win11-clone dev --full   # independent full copy
-```
-
-Each disk derives its own firmware/TPM/monitor/config/install-state from the disk path, so clones
-run side by side off one `/storage`. Linked clones share a read-only `storage/win11/base.qcow2`.
-Clones inherit the source's machine SID/hostname — run `sysprep /generalize` inside Windows before
-cloning if you need unique identities.
-
-```bash
-docker run -d --name win11-dev --device=/dev/kvm \
-  -e ZSRV_vm=true -e ZSRV_tpm=true -e ZSRV_novnc=true \
-  -e WIN11_INSTALL=none -e DISK=/storage/win11/clones/dev.qcow2 \
-  -p 8016:8006 -v "$PWD/storage:/storage" zzci/qemu
-```
-
----
+Then add a `[guest.<name>]` block pointing `disk` at the clone and run it (own container with
+`VMD_OS=<name>`, or switch the current one). Clones share the source's SID/hostname — fine for
+labs.
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
-|---------|-------------|
-| Install loops to "The computer restarted unexpectedly" | invalid `autounattend.xml`; read `/var/log/supervisord-vm.log`, or mount the qcow2 and read `C:\Windows\Panther\setuperr.log` |
-| Install stalls on the language screen | `LANGUAGE` not in the ISO — the installer warns and falls back to the ISO default; use a multi-language LTSC ISO |
-| Container waits, "no completed install" | status is not `installed` (fresh or interrupted) — run `win11-installer`, or set `WIN11_INSTALL=auto` |
-| Boot hangs at "Windows Boot Manager" after switching `VGA` | the disk lacks the new display driver — revert to `VGA=std`, or reinstall with the target adapter |
-| Console black but RDP works | display sleep, not a hang — press a key to wake |
-| `/dev/kvm` warning / very slow | started without `--device=/dev/kvm` → TCG; add the device |
+- **Setup waits on a language screen** — ISO doesn't contain the configured `language`; the
+  validator normally auto-falls back (see the install log).
+- **Reinstall** — `policy = "force"` (one-shot wipe) or delete `{state}.install*` + the disk.
+- **Display resolution** — edit `xres/yres` in `{dir}/scripts/launcher` (default 1920×1080).
+- **Slow install** — check the log for a TCG warning; you need working `/dev/kvm`.

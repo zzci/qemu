@@ -1,165 +1,101 @@
-# 引擎(系统无关)
+# vmd 引擎
 
 [English](./engine.md) · **中文**
 
-`zzci/qemu` 是一个运行多种客户机的 Docker 镜像。本页讲**对每种客户机都一样**的部分 —— 分派、服务、控制台、
-每机配置/状态约定、存储布局,以及**如何新增客户机**。各系统专属内容在 [../guests/](../guests/);
-网络与设备直通见 [networking-and-devices.zh-CN.md](./networking-and-devices.zh-CN.md);
-概览见[根 README](../../README.zh-CN.md)。
+`vmd` 是一个静态 Rust 二进制,作为容器唯一服务运行(supervisord 程序 `vmd`,由 `ZSRV_vmd=true`
+开关)。它负责:
 
----
+- **QEMU 进程** —— 拉起、守护、按需重启;QMP 控制(含事件流);
+- **sidecar** —— 内置 vTPM 的 swtpm,以及你自定义的进程;随 VM 退出后自动重生;
+- `[web] port` 上的 **Web 控制台 + 电源 API** —— 内嵌 UI(noVNC + xterm),客户机关机时也保持在线。
 
-## 分派 —— 一个镜像,多种客户机
+vmd 不含任何特定系统的知识。一个客户机 = 一个 `[guest.<name>]` 块 + 一个 launcher 脚本。
 
-容器的 `CMD`(来自 `zzci/ubase`)是 `/start.sh` → supervisord,运行三个服务:
+## 配置
 
-| 服务 | 脚本 | 职责 |
-|------|------|------|
-| `vm` | `start-vm` | 读 `$OS` 并 `exec` 对应启动器(`win11`→`start-win11`,`alpine`→`start-alpine`)。 |
-| `tpm` | `start-tpm` | 前台运行 `swtpm`(vTPM 2.0)供需要的客户机用;由 `ZSRV_tpm` 开关。 |
-| `novnc` | `start-novnc` | `websockify` 把 `8006` 端口的浏览器控制台桥接到 QEMU 的 VNC(`:0` / `5900`)。 |
+查找顺序:`$VMD_CONFIG` → `/vms/vmd.toml` → `/etc/vmd/vmd.toml`。首次 `run` 时,若挂载了 `/vms`
+卷且其中没有配置,会自动把内置默认复制到 `/vms/vmd.toml` 供编辑。活动客户机:`$VMD_OS`,否则
+`default`。
 
-服务用 ubase `ZSRV_*` 环境变量开关(`ZSRV_vm`、`ZSRV_tpm`、`ZSRV_novnc`),运行时用
-`sctl start|stop|restart <name>` 控制。**镜像不烘焙任何默认值**,所以每个服务**默认关闭、必须显式启用** ——
-裸 `docker run` 什么都不启动。按需启用,如 `-e ZSRV_novnc=true -e ZSRV_tpm=true -e ZSRV_vm=true`;
-仅构建的容器把 `ZSRV_vm` 留空(再 `docker exec <c> win11-installer`)。
+### 客户机字段
 
-`start-vm` 保持精简 —— 它集中**OS 无关的引擎默认值**(内存、CPU、磁盘、machine、网络、显示;都可用
-`docker run -e …` 覆盖)并导出,然后分派。客户机专属配置(如 Windows 的账户/区域/安装策略)留在该客户机自己的
-启动器里,不放这里。每个客户机的启动器**各自负责安装+引导**(所以互不影响),只从 **`qemu-common.sh`** 取通用的
-共享辅助(日志、KVM/固件探测、VNC、端口转发拼接、优雅关机托管)—— 不共享任何客户机逻辑。
+| 字段 | 含义 |
+|---|---|
+| `dir` | 客户机主目录。磁盘、状态、socket、日志、`scripts/` 都在其下。 |
+| `disk` | 磁盘镜像。绝对路径原样用;相对路径在 `dir` 下;省略 → `{dir}/disk.qcow2`。 |
+| `disk_size` | 全新安装时的大小(默认 16G)。以 `VMD_DISK_SIZE` 暴露。 |
+| `ram`、`cpus` | 资源(默认 2G / 2)。 |
+| `launch` | 启动器:模板名(`/build/templates/` 下的文件夹)或脚本路径。 |
+| `qemu` | 内联 QEMU 命令(替代 `launch`)。必须含 `-qmp unix:{qmp},server,nowait`。 |
+| `extra` | 追加到命令的额外参数(会做占位符替换)。 |
+| `tpm` | `true` = 受管 swtpm sidecar;launcher 通过 `$VMD_TPM_SOCK` 接线。 |
+| `seed` | `[{ template, to }]` 缺失才复制(如 OVMF NVRAM)。 |
+| `prepare` | 启动前执行的一次性命令(如 `mkdir`)。 |
+| `sidecars` | VM 旁的额外进程/脚本:`[{ command, wait_for }]`。 |
 
-**虚拟机生命周期。** `docker stop` 时启动器先请求客户机 ACPI 关机,并**等待** QEMU 刷盘完成后才退出
-(不会在写盘途中被 SIGKILL),磁盘保持干净 —— 请给足 `stop_grace_period`。在客户机**内部**关机会让它
-关闭并**保持关机**(`vm` 程序以 0 退出;supervisord 的 `autorestart=unexpected` 只会重启*崩溃*)——
-用 `sctl start vm` 或重启容器再次引导。客户机**重启**则只是原地重置虚拟机。
+### 占位符 / 环境变量
 
----
+每个占位符既可用于配置字符串替换,也以 `VMD_<KEY>` 导出给 launcher、安装脚本和 sidecar:
 
-## 控制台、KVM、日志
+`accel cpu cpus ram name uuid mac state dir disk disk_size vnc_sock qmp console_sock tpm_sock
+web_port`
 
-- **控制台**:打开 `http://<host>:8006/` 即 noVNC 浏览器控制台(完整鼠标键盘)。每种客户机都在 QEMU
-  VNC `:0` 暴露显示,由 `novnc` 桥接。
-- **KVM**:传 `--device=/dev/kvm`。每个启动器都会探测它并用 `-cpu host` + `accel=kvm`;没有则回退
-  `accel=tcg` + `-cpu max`(软件模拟 —— 装机太慢)。会打印告警。
-- **日志**:supervisord 写在**容器内**(不在 `/storage` 卷上):`/var/log/supervisord-vm.log`
-  (QEMU / 安装 / 引导)、`/var/log/supervisord-tpm.log`(vTPM)、`/var/log/supervisord-novnc.log`
-  (控制台桥)。用 `docker exec <c> tail -f /var/log/supervisord-vm.log` 查看。
+`{state}` 是磁盘路径去扩展名(如 `/vms/win11/windows`),是所有状态文件的前缀。`accel`/`cpu`
+自动探测(`kvm/host`,退回 `tcg/max`)。
 
----
+## 脚本:模板 → 你的副本
 
-## vTPM(`tpm` 服务)
+`launch = "win11"` 指向模板文件夹 `/build/templates/win11/`(基路径可用 `$VMD_TEMPLATES` 覆盖)。
+首次启动时 vmd 把文件夹内容复制到 **`{dir}/scripts/`** 并运行副本。各脚本槽位的解析顺序:
 
-需要 TPM 2.0 的客户机(如 Windows 11)由 **`swtpm`** 提供,它作为独立的 supervisord 程序(`start-tpm`)
-运行,而非内联启动 —— 这样可单独控制(`sctl start|stop|restart tpm`)并被任意客户机复用。与其他服务一样,它由
-ubase 的 `ZSRV_*` 开关控制:**`ZSRV_tpm`**(和所有服务一样默认关 —— 需要 TPM 的客户机如 Windows 11
-设 `ZSRV_tpm=true`)。没有单独的 TPM 环境变量。
+1. `{dir}/scripts/<槽位>` —— 你的副本;**永不覆盖**,编辑即生效;
+2. 模板文件夹内的文件 —— 首启播种;
+3. 自定义路径(`launch` / `install.launch` 为路径时)—— 同样播种进 `scripts/`。
 
-状态存在**客户机磁盘旁**(`<disk>.tpm/`,控制套接字 `<disk>.tpm/swtpm-sock`),与其他每机状态一样按磁盘路径
-派生 —— 因此跨重启持久、每个克隆相互隔离。`tpm` 服务以更低的 supervisord 优先级先于 `vm` 启动;由于程序并行
-启动,客户机启动器会在引导 QEMU 前**等待** vTPM 套接字就绪。它不含任何 swtpm 细节,只做委托:`start-tpm socket`
-返回控制套接字路径(供 `-readconfig`),`start-tpm wait` 必要时拉起服务并阻塞到就绪,超时则快速报错,而不是让
-Windows 在无 TPM 的情况下引导。新增需要 TPM 的客户机启用 `ZSRV_tpm` 并调用 `start-tpm wait`;不需要 TPM
-的客户机保持其关闭即可。
+launcher 必须 `exec qemu-system-x86_64 … -qmp "unix:${VMD_QMP},server,nowait"`。
 
----
+## 安装把关
 
-## 每机配置与状态约定
-
-每种客户机都按**磁盘路径**派生各自的每机文件:取 `STATE="${DISK%.*}"`,磁盘
-`/storage/win11/windows.qcow2` 会派生出 `windows.conf`、`windows.qemu.conf`、`windows.OVMF_VARS.fd`、
-`windows.tpm/`、`windows.monitor.sock` 等 —— 都在磁盘旁边。把 `DISK` 指向另一路径(如克隆)即自动获得
-独立状态;多台 VM 共用一个 `/storage` 也不冲突。
-
-配置文件是 **incus 风格**:首次引导时启动器用环境变量生成 `<disk>.conf`,此后以它为准。**编辑后重启**
-即可改运行设置;删除它则从环境变量重新生成。安装时烧入的身份/语言(账号、语言、版本)**不**从 conf 重读。
-
-客户机可能在磁盘旁保留的状态文件:
-
-| 文件 | 含义 |
-|------|------|
-| `<disk>.conf` | 可编辑的每机配置(首启后即权威) |
-| `<disk>.qemu.conf` | 生成的 `-readconfig` 拓扑(每次引导重建;勿改) |
-| `<disk>.install` | 安装生命周期记录(`installing` / `installed`)—— 把关是否重装 |
-| `<disk>.force-applied` | `WIN11_INSTALL=force` 的一次性保护标记 |
-| `<disk>.OVMF_VARS.fd`、`<disk>.tpm/` | UEFI NVRAM 与 swtpm 状态(固件类客户机) |
-
----
-
-## 存储布局
-
-```
-storage/
-├── <os>/        # 每客户机状态:qcow2 + 所有 <disk>.* 文件 + clones/ + base.qcow2
-├── logs/        # vm.log、novnc.log(共享)
-└── …
+```toml
+[guest.win11.install]
+policy      = "auto"      # auto | force | none
+# launch    = "win11"     # 安装脚本;默认取客户机自己的模板
+source_iso  = "/images/win11.iso"
+username    = "docker"
 ```
 
-每客户机一个目录(`storage/win11/`、`storage/alpine/`)。临时构建产物(如重制的 Windows 安装 ISO)放
-`/tmp`,**从不**进 `/storage`。输入 ISO 只读挂载到 `/images`。
+- **auto** —— 安装脚本只跑一次(标记 `{state}.installed`),之后跳过。标记仅在磁盘存在时生效:
+  删掉磁盘,下次启动会自动重装。
+- **force** —— 一次性抹盘重装(环境变量 `FORCE=1`),记录于 `{state}.force-applied`。
+- **none** —— 永不安装;已有磁盘标记为 `migrated`,没有磁盘则报错。
 
----
+表内其余每个键都**大写后作为环境变量**传给脚本(`source_iso` → `SOURCE_ISO`),值会做占位符
+替换。磁盘与大小不用重复写——脚本读 `VMD_DISK` / `VMD_DISK_SIZE`。退出码 0 = 安装完成。
 
-## 新增客户机
+## 电源生命周期
 
-引擎、控制台、网络与设备直通都与客户机无关,所以新增一个客户机很小 —— 它自己负责引导逻辑,通用辅助则共享自
-`qemu-common.sh`:
+- `POST /power/shutdown`(或 SIGTERM / `docker stop`):按下 ACPI 电源键 → 客户机关机。vmd 会
+  **每 20 秒重按一次**(Windows 在登录界面初始化期间会丢弃该事件);若客户机**睡眠**则先唤醒,
+  连续两次入睡则强制断电;超过 `stop_grace_secs`(默认 150)后 SIGKILL 兜底。
+- 客户机干净关机**不会**结束容器:Web 控制台保持在线,`POST /power/start` 再次开机。
+- `reset` = 硬复位,`poweroff` = 立即退出 QEMU。
+- QEMU 非零退出 → vmd 以同码退出,supervisord 自动重启。
 
-1. **写 `rootfs/build/bin/start-<os>`** —— 一个脚本,设好 `LOG_TAG` 后 source `qemu-common.sh`,然后:
-   - 从环境变量读取旋钮(`RAM_SIZE`、`CPU_CORES`、`DISK`、`NETWORK`……);
-   - `DISK` 默认 `$STORAGE/<os>/<name>.qcow2`,并 `mkdir -p "$(dirname "$DISK")"`(沿用每 OS 目录约定);
-   - 用共享的 `detect_kvm` 探测 KVM,用 `build_vnc_args` 配 VNC,拼装自己的 QEMU 命令,(可选)在 `/images`
-     或 `/storage` 下定位/下载安装介质;
-   - 后台启动 QEMU,把 pid 交给 `supervise_qemu`(优雅关机 + 保持关机);
-   - 临时构建产物放 `/tmp`,不放 `/storage`。
-2. **接入 `start-vm`** —— 加一个 `case` 分支,把你的 `OS` 取值映射到 `start-<os>`。
-3. **复用通用部分** —— 网络与设备直通用法相同,见
-   [networking-and-devices.zh-CN.md](./networking-and-devices.zh-CN.md)。若客户机无人值守安装,
-   可像 Windows 那样用安装状态文件(`<disk>.install`)。
-4. **写文档** —— 新增 `docs/guests/<os>.md`(+ `.zh-CN.md`),并在 [docs/README.zh-CN.md](../README.zh-CN.md)
-   里列出。
+命令行(容器内):`vmd power status|start|shutdown|reset|poweroff`、`vmd print`。
 
-[Alpine](../guests/alpine.zh-CN.md) 是最简参考(控制台安装、SeaBIOS、无无人值守流程);
-[Windows](../guests/windows.zh-CN.md) 是完整示例(无人值守安装、TPM/UEFI、注入驱动、安装状态)。
-新客户机的文档可从 [`docs/guests/_template.zh-CN.md`](../guests/_template.zh-CN.md) 起步。
+## Web 端点
 
-### 启动器骨架
+| 端点 | 作用 |
+|---|---|
+| `/` | 控制台 UI(首页 / VNC / 串口;中英文)。 |
+| `/websockify` | WebSocket ↔ QEMU VNC unix socket(`{state}.vnc.sock`)。 |
+| `/console` | WebSocket ↔ 串口 unix socket(`{state}.console.sock`)。 |
+| `GET /status` | `running` / `off` / …… |
+| `GET /info` | JSON:名称、资源、UUID/MAC、TPM、端口转发、串口可用性、完整命令。 |
+| `POST /power/<a>` | `start` \| `shutdown` \| `reset` \| `poweroff`。 |
 
-一个可复制的最简 `rootfs/build/bin/start-<os>`:
-
-```bash
-#!/usr/bin/env bash
-# start-<os> —— 最简客户机启动器。通用辅助共享自 qemu-common.sh;把 OS=<os> 接入 start-vm。
-set -euo pipefail
-LOG_TAG=<os>
-source /build/bin/qemu-common.sh
-: "${STORAGE:=/storage}"; : "${IMAGES:=/images}"
-: "${RAM_SIZE:=2G}"; : "${CPU_CORES:=2}"; : "${DISK_SIZE:=16G}"; : "${MACHINE:=q35}"
-: "${DISK:=$STORAGE/<os>/<os>.qcow2}"          # 每 OS 目录约定
-: "${NETWORK:=user}"; : "${PORT_FWD:=2222-22}"; : "${EXTRA_ARGS:=}"
-: "${VNC_HOST:=127.0.0.1}"; : "${VNC_PASSWORD:=}"
-STATE="${DISK%.*}"; MONITOR="$STATE.monitor.sock"; VNC_SECRET="/tmp/$(basename "$STATE").vncpw"
-
-mkdir -p "$(dirname "$DISK")"
-detect_kvm; ACCEL=(-machine "${MACHINE},accel=$ACCEL_MODE" -cpu "$CPU_MODEL")   # 来自 qemu-common.sh
-build_vnc_args                                                                  # -> VNC_ARGS
-[ -f "$DISK" ] || qemu-img create -f qcow2 "$DISK" "$DISK_SIZE" >/dev/null
-# TODO: 在 /images 或 /storage 下定位/下载安装介质;临时产物放 /tmp。
-rm -f "$MONITOR"
-
-# shellcheck disable=SC2086
-qemu-system-x86_64 "${ACCEL[@]}" -smp "$CPU_CORES" -m "$RAM_SIZE" \
-    -device virtio-rng-pci -device VGA "${VNC_ARGS[@]}" \
-    -monitor "unix:$MONITOR,server,nowait" -name "<os>" \
-    -netdev "user,id=net0$(user_hostfwd "$PORT_FWD")" -device virtio-net-pci,netdev=net0 $EXTRA_ARGS \
-    -drive "file=$DISK,if=none,id=disk0,format=qcow2,cache=writeback" \
-    -device virtio-blk-pci,drive=disk0,bootindex=1 &
-supervise_qemu $!   # 优雅关机 + 保持关机(来自 qemu-common.sh)
-```
-
-再给 `start-vm` 加一个 `case` 分支:
-
-```bash
-    <os>|<alias>)
-        log "OS=$OS -> start-<os>"; exec /build/bin/start-<os> ;;
-```
+安全:VNC 与串口都是 **unix socket** —— 除 Web 端口外零 TCP 监听。所有端点执行同源/白名单
+Origin 校验(`[web] allowed_origins` 追加)。`[web] password` 让一切先过登录(会话 cookie;
+命令行走 `X-VMD-Password` 头)。密码连续输错会被递增延迟;经 HTTPS 反向代理
+(`X-Forwarded-Proto: https`)时会话 cookie 自动带 `Secure`。vmd 本身只提供明文 HTTP ——
+端口请保持在 localhost 或置于该代理之后。

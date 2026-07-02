@@ -1,183 +1,110 @@
-# The engine (OS-agnostic)
+# The vmd engine
 
 **English** · [中文](./engine.zh-CN.md)
 
-`zzci/qemu` is one Docker image that runs many guests. This page covers the parts that are the
-**same for every guest** — dispatch, services, the console, the per-VM config/state convention, the
-storage layout, and **how to add a new guest**. Per-OS specifics live under
-[../guests/](../guests/); networking and device passthrough are in
-[networking-and-devices.md](./networking-and-devices.md). Overview: [root README](../../README.md).
+`vmd` is a single static Rust binary running as the container's only service (supervisord program
+`vmd`, toggled by `ZSRV_vmd=true`). It owns:
 
----
+- the **QEMU process** — spawn, supervise, restart-on-start; QMP control (events included);
+- **sidecars** — swtpm for the built-in vTPM, plus anything you list; respawned automatically if
+  they die with the VM;
+- the **web console + power API** on `[web] port` — embedded UI (noVNC + xterm), stays up even
+  while the guest is off.
 
-## Dispatch — one image, many guests
+vmd has no per-OS knowledge. A guest = a `[guest.<name>]` block + a launcher script.
 
-The container's `CMD` (from `zzci/ubase`) is `/start.sh` → supervisord, which runs three services:
+## Configuration
 
-| Service | Script | Role |
-|---------|--------|------|
-| `vm` | `start-vm` | Reads `$OS` and `exec`s the matching starter (`win11`→`start-win11`, `alpine`→`start-alpine`). |
-| `tpm` | `start-tpm` | Runs `swtpm` (vTPM 2.0) in the foreground for guests that need one; toggled by `ZSRV_tpm`. |
-| `novnc` | `start-novnc` | `websockify` bridges the browser console on port `8006` to QEMU's VNC (`:0` / `5900`). |
+Search order: `$VMD_CONFIG` → `/vms/vmd.toml` → `/etc/vmd/vmd.toml`. On first `run`, the baked
+default is copied to `/vms/vmd.toml` (if a `/vms` volume exists and nothing is there) so you edit a
+live copy. Active guest: `$VMD_OS`, else `default`.
 
-Services are toggled with ubase `ZSRV_*` env vars (`ZSRV_vm`, `ZSRV_tpm`, `ZSRV_novnc`) and
-controlled at runtime with `sctl start|stop|restart <name>`. **Nothing is baked into the image**, so
-each service is **off until explicitly enabled** — a bare `docker run` boots nothing. Enable what you
-need, e.g. `-e ZSRV_novnc=true -e ZSRV_tpm=true -e ZSRV_vm=true`. Leave `ZSRV_vm` off for a
-build-only container (then `docker exec <c> win11-installer`).
+### Guest fields
 
-`start-vm` stays small — it seeds the **OS-agnostic engine defaults** (RAM, CPUs, disk, machine,
-network, display; all overridable with `docker run -e …`) and exports them, then dispatches.
-Guest-specific config (e.g. the Windows account/locale/install policy) lives in that guest's own
-starter, not here. Each guest's starter **owns its own install + boot logic** (so guests can't break
-each other) and pulls only shared, generic helpers from **`qemu-common.sh`** (logging, KVM/firmware
-detection, VNC, host-forward glue, graceful-shutdown supervision) — no guest logic is shared.
+| Field | Meaning |
+|---|---|
+| `dir` | Guest home. Disk, state, sockets, logs and `scripts/` live under it. |
+| `disk` | Disk image. Absolute as-is; relative under `dir`; omitted → `{dir}/disk.qcow2`. |
+| `disk_size` | Size for fresh installs (default 16G). Exposed as `VMD_DISK_SIZE`. |
+| `ram`, `cpus` | Resources (default 2G / 2). |
+| `launch` | Launcher: a bare template name (folder under `/build/templates/`) or a script path. |
+| `qemu` | Inline QEMU command instead of `launch`. Must include `-qmp unix:{qmp},server,nowait`. |
+| `extra` | Extra args appended to the command (placeholder-substituted). |
+| `tpm` | `true` = managed swtpm sidecar; the launcher wires it via `$VMD_TPM_SOCK`. |
+| `seed` | `[{ template, to }]` copy-if-missing (e.g. OVMF NVRAM). |
+| `prepare` | Commands run once before boot (e.g. `mkdir`). |
+| `sidecars` | Extra processes/scripts beside the VM: `[{ command, wait_for }]`. |
 
-**VM lifecycle.** On `docker stop` the starter asks the guest to ACPI power off and **waits** for
-QEMU to finish flushing before exiting (no SIGKILL mid-write), so the disk stays clean — give it room
-with a generous `stop_grace_period`. Shutting the guest down **from inside** powers it off and it
-**stays off** (the `vm` program exits 0; supervisord's `autorestart=unexpected` only restarts a
-*crash*) — boot it again with `sctl start vm` or by restarting the container. A guest *reboot* just
-resets the VM in place.
+### Placeholders / env
 
----
+Every placeholder is substituted in config strings **and** exported to the launcher, install
+script and sidecars as `VMD_<KEY>`:
 
-## Console, KVM, logs
+`accel cpu cpus ram name uuid mac state dir disk disk_size vnc_sock qmp console_sock tpm_sock
+web_port`
 
-- **Console**: open `http://<host>:8006/` for the noVNC browser console (full mouse/keyboard).
-  Every guest exposes its display on QEMU VNC `:0`; `novnc` bridges it.
-- **KVM**: pass `--device=/dev/kvm`. Each starter probes it and uses `-cpu host` with
-  `accel=kvm`; without it QEMU falls back to `accel=tcg` + `-cpu max` (software emulation — far too
-  slow for a real install). The warning is logged.
-- **Logs**: supervisord writes `/var/log/supervisord-vm.log` (QEMU / install / boot),
-  `/var/log/supervisord-tpm.log` (vTPM) and `/var/log/supervisord-novnc.log` (console bridge) —
-  inside the container (not on the `/storage` volume). Tail them with
-  `docker exec <c> tail -f /var/log/supervisord-vm.log`.
+`{state}` is the disk path without extension (e.g. `/vms/win11/windows`) — the stem for all state
+files. `accel`/`cpu` are auto-detected (`kvm/host`, falling back to `tcg/max`).
 
----
+## Scripts: template → your copy
 
-## vTPM (the `tpm` service)
+`launch = "win11"` points at the template folder `/build/templates/win11/` (base overridable with
+`$VMD_TEMPLATES`). On first boot vmd copies the folder's files into **`{dir}/scripts/`** and runs
+the copies. Resolution per script slot:
 
-Guests that require a TPM 2.0 (e.g. Windows 11) get one from **`swtpm`**, run as its own supervisord
-program (`start-tpm`) rather than launched inline — so it can be controlled on its own
-(`sctl start|stop|restart tpm`) and reused by any guest. Like every service it is toggled with the
-ubase `ZSRV_*` switch: **`ZSRV_tpm`** (off until enabled, like every service — set `ZSRV_tpm=true`
-for a TPM guest such as Windows 11). There is no separate TPM env knob.
+1. `{dir}/scripts/<slot>` — your copy; **never overwritten**, edits win;
+2. the template folder file — seeded on first boot;
+3. a custom path (when `launch` / `install.launch` is a path) — seeded into `scripts/` too.
 
-State lives **next to the guest disk** (`<disk>.tpm/`, control socket `<disk>.tpm/swtpm-sock`),
-derived from the disk path like all other per-VM state — so it persists across restarts and each
-clone is isolated. The `tpm` service starts before `vm` (lower supervisord priority); because
-programs start in parallel, the guest starter **waits** for the vTPM socket before booting QEMU. It
-carries no swtpm specifics — it just delegates: `start-tpm socket` returns the control-socket path
-(for `-readconfig`) and `start-tpm wait` starts the service if needed and blocks until it is ready,
-failing fast rather than booting Windows without a TPM. A new TPM-needing guest enables `ZSRV_tpm`
-and calls `start-tpm wait`; guests that need no TPM just leave it off.
+The launcher must `exec qemu-system-x86_64 … -qmp "unix:${VMD_QMP},server,nowait"`.
 
----
+## Install gating
 
-## Per-VM config & state convention
-
-Every guest derives its per-VM files from the **disk path**: with `STATE="${DISK%.*}"`, a disk at
-`/storage/win11/windows.qcow2` yields `windows.conf`, `windows.qemu.conf`, `windows.OVMF_VARS.fd`,
-`windows.tpm/`, `windows.monitor.sock`, etc. — all next to the disk. Point `DISK` at a different
-path (e.g. a clone) and it gets its own independent state automatically; many VMs share one
-`/storage` without colliding.
-
-The config file is **incus-style**: on first boot the starter seeds `<disk>.conf` from the
-environment, then treats that file as authoritative. **Edit it and restart** to change runtime
-settings; delete it to re-seed from the environment. Identity/locale that is baked at install time
-(account, language, edition) is **not** re-read from the conf.
-
-State files a guest may keep next to its disk:
-
-| File | Meaning |
-|------|---------|
-| `<disk>.conf` | editable per-VM config (authoritative after first boot) |
-| `<disk>.qemu.conf` | generated `-readconfig` topology (regenerated each boot; do not edit) |
-| `<disk>.install` | install lifecycle record (`installing` / `installed`) — gates re-install |
-| `<disk>.force-applied` | one-shot guard for `WIN11_INSTALL=force` |
-| `<disk>.OVMF_VARS.fd`, `<disk>.tpm/` | UEFI NVRAM and swtpm state (firmware-class guests) |
-
----
-
-## Storage layout
-
-```
-storage/
-├── <os>/        # per-guest state: the qcow2 + all <disk>.* files + clones/ + base.qcow2
-├── logs/        # vm.log, novnc.log  (shared)
-└── …
+```toml
+[guest.win11.install]
+policy      = "auto"      # auto | force | none
+# launch    = "win11"     # install script; defaults to the guest's own template
+source_iso  = "/images/win11.iso"
+username    = "docker"
 ```
 
-One directory per guest (`storage/win11/`, `storage/alpine/`). Transient build artifacts (e.g. the
-repacked Windows install ISO) go to `/tmp`, **never** into `/storage`. Mount input ISOs read-only
-under `/images`.
+- **auto** — run the install script once (marker `{state}.installed`), then skip. The marker only
+  counts while the disk exists: delete the disk and the next boot reinstalls automatically.
+- **force** — one-shot wipe + reinstall (`FORCE=1` in the env), recorded in
+  `{state}.force-applied`.
+- **none** — never install; an existing disk is marked `migrated`, a missing disk is an error.
 
----
+Every other key in the table becomes an **UPPERCASE env var** for the script (`source_iso` →
+`SOURCE_ISO`), values placeholder-substituted. Disk and size are not repeated — the script reads
+`VMD_DISK` / `VMD_DISK_SIZE`. Exit 0 = installed.
 
-## Adding a guest
+## Power lifecycle
 
-The engine, console, networking and device passthrough are all guest-agnostic, so a new guest is
-small — it owns its boot logic and shares the generic helpers from `qemu-common.sh`:
+- `POST /power/shutdown` (or SIGTERM / `docker stop`): ACPI power button → the guest shuts down.
+  vmd **re-presses the button every 20 s** (Windows drops the event while the logon UI is
+  starting), wakes a **sleeping** guest first and force-quits if it suspends twice, and SIGKILLs
+  after `stop_grace_secs` (default 150) as the last resort.
+- A clean guest power-off does **not** end the container: the web console stays up and
+  `POST /power/start` boots the VM again.
+- `reset` = hard reset, `poweroff` = immediate QEMU quit.
+- QEMU exit ≠ 0 → vmd exits with that code and supervisord restarts it.
 
-1. **Write `rootfs/build/bin/start-<os>`** — a script that sources `qemu-common.sh` (after setting
-   `LOG_TAG`) and:
-   - reads its knobs from env (`RAM_SIZE`, `CPU_CORES`, `DISK`, `NETWORK`, …);
-   - defaults `DISK` to `$STORAGE/<os>/<name>.qcow2` and `mkdir -p "$(dirname "$DISK")"` (keep the
-     per-OS dir convention);
-   - probes KVM with the shared `detect_kvm`, sets up VNC with `build_vnc_args`, builds its QEMU
-     command, and (optionally) downloads/locates its install media under `/images` or `/storage`;
-   - launches QEMU in the background and hands the pid to `supervise_qemu` (graceful stop + stay-off);
-   - puts transient build artifacts in `/tmp`, not `/storage`.
-2. **Wire it into `start-vm`** — add a `case` arm mapping your `OS` value(s) to `start-<os>`.
-3. **Reuse the commons** — networking and device passthrough work the same; see
-   [networking-and-devices.md](./networking-and-devices.md). If your guest installs unattended,
-   consider an install-state file (`<disk>.install`) like Windows uses.
-4. **Document it** — add `docs/guests/<os>.md` (+ `.zh-CN.md`) and list it in
-   [docs/README.md](../README.md).
+CLI (inside the container): `vmd power status|start|shutdown|reset|poweroff`, `vmd print`.
 
-[Alpine](../guests/alpine.md) is the minimal reference (console install, SeaBIOS, no unattended
-pipeline); [Windows](../guests/windows.md) is the full example (unattended install, TPM/UEFI,
-slipstreamed drivers, install-state). Document the new guest from
-[`docs/guests/_template.md`](../guests/_template.md).
+## Web endpoints
 
-### Starter skeleton
+| Endpoint | Purpose |
+|---|---|
+| `/` | Console UI (home / VNC / serial; English/中文). |
+| `/websockify` | WebSocket ↔ QEMU VNC unix socket (`{state}.vnc.sock`). |
+| `/console` | WebSocket ↔ serial console unix socket (`{state}.console.sock`). |
+| `GET /status` | `running` / `off` / … |
+| `GET /info` | JSON: name, resources, UUID/MAC, TPM, port forwards, serial-console availability, full command. |
+| `POST /power/<a>` | `start` \| `shutdown` \| `reset` \| `poweroff`. |
 
-A minimal `rootfs/build/bin/start-<os>` to copy from:
-
-```bash
-#!/usr/bin/env bash
-# start-<os> — minimal guest starter. Shares helpers from qemu-common.sh; wire OS=<os> into start-vm.
-set -euo pipefail
-LOG_TAG=<os>
-source /build/bin/qemu-common.sh
-: "${STORAGE:=/storage}"; : "${IMAGES:=/images}"
-: "${RAM_SIZE:=2G}"; : "${CPU_CORES:=2}"; : "${DISK_SIZE:=16G}"; : "${MACHINE:=q35}"
-: "${DISK:=$STORAGE/<os>/<os>.qcow2}"          # per-OS dir convention
-: "${NETWORK:=user}"; : "${PORT_FWD:=2222-22}"; : "${EXTRA_ARGS:=}"
-: "${VNC_HOST:=127.0.0.1}"; : "${VNC_PASSWORD:=}"
-STATE="${DISK%.*}"; MONITOR="$STATE.monitor.sock"; VNC_SECRET="/tmp/$(basename "$STATE").vncpw"
-
-mkdir -p "$(dirname "$DISK")"
-detect_kvm; ACCEL=(-machine "${MACHINE},accel=$ACCEL_MODE" -cpu "$CPU_MODEL")   # from qemu-common.sh
-build_vnc_args                                                                  # -> VNC_ARGS
-[ -f "$DISK" ] || qemu-img create -f qcow2 "$DISK" "$DISK_SIZE" >/dev/null
-# TODO: locate/download install media under /images or /storage; build artifacts -> /tmp.
-rm -f "$MONITOR"
-
-# shellcheck disable=SC2086
-qemu-system-x86_64 "${ACCEL[@]}" -smp "$CPU_CORES" -m "$RAM_SIZE" \
-    -device virtio-rng-pci -device VGA "${VNC_ARGS[@]}" \
-    -monitor "unix:$MONITOR,server,nowait" -name "<os>" \
-    -netdev "user,id=net0$(user_hostfwd "$PORT_FWD")" -device virtio-net-pci,netdev=net0 $EXTRA_ARGS \
-    -drive "file=$DISK,if=none,id=disk0,format=qcow2,cache=writeback" \
-    -device virtio-blk-pci,drive=disk0,bootindex=1 &
-supervise_qemu $!   # graceful stop + stay-off (from qemu-common.sh)
-```
-
-Then add a `case` arm to `start-vm`:
-
-```bash
-    <os>|<alias>)
-        log "OS=$OS -> start-<os>"; exec /build/bin/start-<os> ;;
-```
+Security: VNC and serial are **unix sockets** — nothing listens on TCP except the web port. All
+endpoints enforce a same-origin/allowlist Origin check (`[web] allowed_origins` adds extras).
+`[web] password` gates everything behind a login (session cookie; the CLI sends
+`X-VMD-Password`). Wrong passwords are tarpitted with a growing delay; behind an HTTPS reverse
+proxy (`X-Forwarded-Proto: https`) the session cookie is set `Secure`. vmd itself serves plain
+HTTP — keep the port on localhost or behind that proxy.

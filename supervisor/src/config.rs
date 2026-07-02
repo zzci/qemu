@@ -122,8 +122,8 @@ pub struct Config {
 impl Config {
     pub fn load() -> Result<Config> {
         let path = config_path()?;
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading config {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("reading config {}", path.display()))?;
         let file: RawFile =
             toml::from_str(&text).with_context(|| format!("parsing config {}", path.display()))?;
 
@@ -132,10 +132,7 @@ impl Config {
             .filter(|s| !s.is_empty())
             .or_else(|| file.default.clone())
             .context("no active guest: set `default` in the config or VMD_OS")?;
-        let g = file
-            .guest
-            .get(&name)
-            .with_context(|| format!("no [guest.{name}] in the config"))?;
+        let g = file.guest.get(&name).with_context(|| format!("no [guest.{name}] in the config"))?;
         let qemu = g.qemu.clone().unwrap_or_default();
         let launch = g.launch.clone().filter(|s| !s.trim().is_empty());
         if qemu.trim().is_empty() && launch.is_none() {
@@ -168,11 +165,7 @@ impl Config {
 
     /// `/vms/win11/windows.qcow2` -> `/vms/win11/windows`.
     pub fn state_stem(&self) -> String {
-        let s = self.disk.to_string_lossy();
-        match s.rsplit_once('.') {
-            Some((stem, _)) => stem.to_string(),
-            None => s.into_owned(),
-        }
+        state_stem_of(&self.disk)
     }
     pub fn qmp_sock(&self) -> PathBuf {
         PathBuf::from(format!("{}.qmp.sock", self.state_stem()))
@@ -183,6 +176,12 @@ impl Config {
     pub fn vnc_sock(&self) -> PathBuf {
         PathBuf::from(format!("{}.vnc.sock", self.state_stem()))
     }
+}
+
+/// Strip the disk's extension (file name only, so a dotted directory like `/vms/v1.2/` is safe)
+/// to form the per-VM state prefix.
+fn state_stem_of(disk: &Path) -> String {
+    disk.with_extension("").to_string_lossy().into_owned()
 }
 
 /// Disk path: absolute wins; relative joins `dir`; omitted -> `{dir}/disk.qcow2`.
@@ -225,4 +224,32 @@ fn config_path() -> Result<PathBuf> {
         }
     }
     bail!("no config file (set VMD_CONFIG, or provide /vms/vmd.toml or /etc/vmd/vmd.toml)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_disk, state_stem_of};
+    use std::path::Path;
+
+    #[test]
+    fn state_stem_strips_only_the_file_extension() {
+        assert_eq!(state_stem_of(Path::new("/vms/win11/windows.qcow2")), "/vms/win11/windows");
+        assert_eq!(state_stem_of(Path::new("/vms/win11/win.2024.qcow2")), "/vms/win11/win.2024");
+    }
+
+    #[test]
+    fn state_stem_keeps_dotted_directories_intact() {
+        // a dot in a parent directory must never truncate the state prefix
+        assert_eq!(state_stem_of(Path::new("/vms/v1.2/windows")), "/vms/v1.2/windows");
+        assert_eq!(state_stem_of(Path::new("/vms/v1.2/windows.qcow2")), "/vms/v1.2/windows");
+    }
+
+    #[test]
+    fn disk_resolution_rules() {
+        let dir = Path::new("/vms/g");
+        assert_eq!(resolve_disk(Some("/abs/d.qcow2"), Some(dir), "g").unwrap(), Path::new("/abs/d.qcow2"));
+        assert_eq!(resolve_disk(Some("d.qcow2"), Some(dir), "g").unwrap(), Path::new("/vms/g/d.qcow2"));
+        assert_eq!(resolve_disk(None, Some(dir), "g").unwrap(), Path::new("/vms/g/disk.qcow2"));
+        assert!(resolve_disk(None, None, "g").is_err());
+    }
 }

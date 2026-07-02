@@ -25,6 +25,8 @@ export interface PortForward {
 // Mirrors the supervisor's /info payload: live run-state plus the static VM facts.
 export interface VmInfo {
   status: string
+  // whether the guest's serial console socket exists (drives the serial button's visibility)
+  console: boolean
   name: string
   accel: string
   cpu: string

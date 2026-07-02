@@ -2,25 +2,24 @@
 
 **English** · [中文](./README.zh-CN.md)
 
-In-depth guides for the `zzci/qemu` engine, split into **OS-agnostic** (the engine, shared by every
-guest) and **per-guest** (one document per `OS`). Start with the [root README](../README.md) for the
-overview. Each guide has an English version and a Chinese version (`*.zh-CN.md`), cross-linked at the
-top.
+In-depth guides for the `zzci/qemu` engine, split into **OS-agnostic** (the vmd engine, shared by
+every guest) and **per-guest** (one document per `VMD_OS`). Start with the
+[root README](../README.md) for the overview. Each guide has an English version and a Chinese
+version (`*.zh-CN.md`), cross-linked at the top.
 
 ## Common (OS-agnostic)
 
 | Guide | What it covers |
 |-------|----------------|
-| [common/engine.md](./common/engine.md) | The engine itself — dispatch (`start-vm`), services & console, KVM, the per-VM config/state convention, storage layout, and **how to add a new guest**. |
-| [common/networking-and-devices.md](./common/networking-and-devices.md) | Networking modes, USB passthrough, serial ports, and the `EXTRA_ARGS` escape hatch — with the matching `docker` device/cap flags. |
+| [common/engine.md](./common/engine.md) | The vmd engine — configuration (`vmd.toml`, placeholders, `VMD_*` env), template scripts & `{dir}/scripts`, install gating, power lifecycle, web console & API, security. |
+| [common/networking-and-devices.md](./common/networking-and-devices.md) | Network modes (user/NAT, bridge/tap, macvlan, multi-NIC), serial port mapping (console / TCP / host device), USB passthrough, extra disks, display, audio. |
 
 ## Guests (per-OS)
 
 | Guide | What it covers |
 |-------|----------------|
-| [guests/windows.md](./guests/windows.md) | Windows 11 LTSC — install policy & install-state, ISO, locale/edition, display (`std`→`virtio`), accounts/RDP, storage & per-VM config, clones, troubleshooting. |
-| [guests/alpine.md](./guests/alpine.md) | Alpine Linux — console install, env vars, and the minimal template for adding a guest. |
+| [guests/windows.md](./guests/windows.md) | Windows 11 — unattended install (`[guest.win11.install]` keys), what the installer does, RDP, cloning, troubleshooting. |
+| [guests/alpine.md](./guests/alpine.md) | Alpine Linux — zero-media cloud-image install, serial console, the minimal template. |
 
-**Adding a new OS?** Read [common/engine.md → Adding a guest](./common/engine.md#adding-a-guest):
-write a `start-<os>` script, wire a case into `start-vm`, then add `docs/guests/<os>.md`. The common
-docs above already cover everything that is guest-agnostic.
+**Adding a new OS?** See [CONTRIBUTING.md](./CONTRIBUTING.md): create a template folder
+(`launcher` + optional `install`), add a `[guest.<name>]` block, done — no engine changes.

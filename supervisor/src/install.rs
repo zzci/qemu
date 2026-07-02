@@ -13,42 +13,59 @@ pub async fn ensure(cfg: &Config, inst: &Install, script: &Path, vars: &Vars) ->
     let installed = PathBuf::from(format!("{stem}.installed"));
     let force_applied = PathBuf::from(format!("{stem}.force-applied"));
 
+    // The marker only counts when the disk is actually there — a deleted disk with a stale marker
+    // would otherwise send QEMU into a boot-failure loop that only manual marker removal fixes.
+    let marker_valid = installed.exists() && cfg.disk.exists();
+    if installed.exists() && !cfg.disk.exists() {
+        log::warn(format!(
+            "install marker {} exists but disk {} is missing",
+            installed.display(),
+            cfg.disk.display()
+        ));
+    }
+
     match inst.policy.as_str() {
         "none" => {
-            if installed.exists() {
+            if marker_valid {
                 return Ok(());
             }
             if cfg.disk.exists() {
-                std::fs::write(&installed, "migrated\n").ok();
+                write_marker(&installed, "migrated\n")?;
                 return Ok(());
             }
             bail!("no installed disk and install.policy='none' — set policy='auto' (or 'force')");
         }
         "auto" => {
-            if installed.exists() {
+            if marker_valid {
                 return Ok(());
             }
             run(inst, script, vars, false).await?;
-            std::fs::write(&installed, "installed\n").ok();
+            write_marker(&installed, "installed\n")?;
             Ok(())
         }
         "force" => {
             if force_applied.exists() {
                 log::info("install.policy=force already applied -> booting");
-                if !installed.exists() {
+                if !marker_valid {
                     run(inst, script, vars, false).await?;
-                    std::fs::write(&installed, "installed\n").ok();
+                    write_marker(&installed, "installed\n")?;
                 }
                 return Ok(());
             }
             log::info("install.policy=force: wipe + reinstall (one-shot)");
             run(inst, script, vars, true).await?;
-            std::fs::write(&installed, "installed\n").ok();
-            std::fs::write(&force_applied, "1\n").ok();
+            write_marker(&installed, "installed\n")?;
+            write_marker(&force_applied, "1\n")?;
             Ok(())
         }
         other => bail!("unknown install.policy '{other}' (auto|force|none)"),
     }
+}
+
+/// Persist an install marker; failing to record it must be fatal, or the (possibly destructive)
+/// installer would silently re-run on every boot.
+fn write_marker(path: &Path, contents: &str) -> Result<()> {
+    std::fs::write(path, contents).with_context(|| format!("writing install marker {}", path.display()))
 }
 
 /// The install-table options as (UPPERCASE_KEY, substituted value) env pairs.
@@ -75,10 +92,8 @@ async fn run(inst: &Install, script: &Path, vars: &Vars, force: bool) -> Result<
     for (k, v) in env_of(inst, vars) {
         command.env(k, v);
     }
-    let status = command
-        .status()
-        .await
-        .with_context(|| format!("running installer: {}", script.display()))?;
+    let status =
+        command.status().await.with_context(|| format!("running installer: {}", script.display()))?;
     if !status.success() {
         bail!("installer failed ({status}): {}", script.display());
     }

@@ -21,21 +21,34 @@ use futures_util::{SinkExt, StreamExt};
 use include_dir::{include_dir, Dir};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
+use tokio::net::{TcpListener, UnixStream};
 
 /// The built web console (ui/dist), embedded at compile time (build.rs guarantees the dir).
 static UI: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui/dist");
 
 pub struct WebState {
-    pub vnc_sock: PathBuf,        // {state}.vnc.sock  (QEMU VNC unix socket)
-    pub console_sock: PathBuf,    // {state}.console.sock (may not exist if CONSOLE off)
-    pub ctrl: ControlTx,          // power commands -> the supervisor
+    pub vnc_sock: PathBuf,            // {state}.vnc.sock  (QEMU VNC unix socket)
+    pub console_sock: PathBuf,        // {state}.console.sock (may not exist if CONSOLE off)
+    pub ctrl: ControlTx,              // power commands -> the supervisor
     pub allowed_origins: Vec<String>, // extra Origins to accept (beyond same-origin)
-    pub password: String,         // access password ("" = auth disabled)
-    pub token: String,            // random session secret handed out on a correct login
-    pub info: VmInfo,             // static VM facts for /info (live status is queried per request)
+    pub password: String,             // access password ("" = auth disabled)
+    pub token: String,                // random session secret handed out on a correct login
+    pub phase: Arc<RwLock<String>>,   // non-empty = one-time setup phase overriding /status
+    pub info: VmInfo,                 // static VM facts for /info (live status is queried per request)
+}
+
+/// Consecutive failed password attempts; grows the tarpit delay on each failure.
+static AUTH_FAILURES: AtomicU32 = AtomicU32::new(0);
+
+/// Tarpit a failed password attempt: the delay grows with consecutive failures, which throttles
+/// brute force (parallel attempts all inherit the grown delay) without locking anyone out.
+async fn throttle_bad_auth() {
+    let n = AUTH_FAILURES.fetch_add(1, Ordering::Relaxed).saturating_add(1).min(8);
+    tokio::time::sleep(Duration::from_millis(500 * u64::from(n))).await;
 }
 
 /// A user-mode host→guest port forward (QEMU SLIRP `hostfwd` or a `PORT_FWD` entry).
@@ -158,6 +171,11 @@ async fn auth(State(s): State<Arc<WebState>>, req: Request, next: Next) -> Respo
     if req.method() == Method::POST && req.uri().path() == "/login" {
         return next.run(req).await;
     }
+    // An explicit (wrong) password was presented — tarpit it. Cookie misses are not throttled:
+    // the session token is unguessable and stale cookies are normal browser behavior.
+    if req.headers().contains_key("x-vmd-password") {
+        throttle_bad_auth().await;
+    }
     if req.method() == Method::GET && !is_api(req.uri().path()) {
         (StatusCode::OK, Html(login_html(false))).into_response()
     } else {
@@ -170,11 +188,20 @@ struct Login {
     password: String,
 }
 
-async fn login(State(s): State<Arc<WebState>>, Form(f): Form<Login>) -> Response {
+async fn login(State(s): State<Arc<WebState>>, headers: HeaderMap, Form(f): Form<Login>) -> Response {
     if ct_eq(f.password.as_bytes(), s.password.as_bytes()) {
-        let cookie = format!("vmd_auth={}; Path=/; HttpOnly; SameSite=Strict", s.token);
+        AUTH_FAILURES.store(0, Ordering::Relaxed);
+        // Mark the cookie Secure when a reverse proxy terminates TLS in front of us; over direct
+        // (plain-HTTP) serving Secure would break login, so it is keyed off X-Forwarded-Proto.
+        let https = headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|p| p.eq_ignore_ascii_case("https"));
+        let secure = if https { "; Secure" } else { "" };
+        let cookie = format!("vmd_auth={}; Path=/; HttpOnly; SameSite=Strict{secure}", s.token);
         ([(SET_COOKIE, cookie)], Redirect::to("/")).into_response()
     } else {
+        throttle_bad_auth().await;
         (StatusCode::UNAUTHORIZED, Html(login_html(true))).into_response()
     }
 }
@@ -198,7 +225,8 @@ button{{border:0;background:#2f81f7;color:#fff;font-weight:600;cursor:pointer}}
     )
 }
 
-pub async fn serve(port: u16, state: WebState) {
+/// Serve the console on an already-bound listener (the caller treats a failed bind as fatal).
+pub async fn serve(listener: TcpListener, state: WebState) {
     let state = Arc::new(state);
     let app = Router::new()
         .route("/websockify", get(vnc_ws))
@@ -211,14 +239,11 @@ pub async fn serve(port: u16, state: WebState) {
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         .with_state(state);
 
-    match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
-        Ok(listener) => {
-            log::info(format!("web console on :{port} (noVNC /vnc.html, WS /websockify /console)"));
-            if let Err(e) = axum::serve(listener, app).await {
-                log::error(format!("web server: {e}"));
-            }
-        }
-        Err(e) => log::error(format!("web bind :{port}: {e}")),
+    if let Ok(addr) = listener.local_addr() {
+        log::info(format!("web console on :{} (WS /websockify /console)", addr.port()));
+    }
+    if let Err(e) = axum::serve(listener, app).await {
+        log::error(format!("web server: {e}"));
     }
 }
 
@@ -233,7 +258,13 @@ async fn console_ws(ws: WebSocketUpgrade, headers: HeaderMap, State(s): State<Ar
 }
 
 /// Origin-guarded raw byte pump between the browser WebSocket and a QEMU unix socket.
-fn bridge(ws: WebSocketUpgrade, headers: &HeaderMap, s: &WebState, sock: PathBuf, label: &'static str) -> Response {
+fn bridge(
+    ws: WebSocketUpgrade,
+    headers: &HeaderMap,
+    s: &WebState,
+    sock: PathBuf,
+    label: &'static str,
+) -> Response {
     if !origin_allowed(headers, &s.allowed_origins) {
         return (StatusCode::FORBIDDEN, "origin not allowed\n").into_response();
     }
@@ -293,9 +324,7 @@ async fn power(
         "shutdown" => Control::Shutdown,
         "reset" => Control::Reset,
         "poweroff" => Control::PowerOff,
-        _ => {
-            return (StatusCode::BAD_REQUEST, "action: start|shutdown|reset|poweroff\n").into_response()
-        }
+        _ => return (StatusCode::BAD_REQUEST, "action: start|shutdown|reset|poweroff\n").into_response(),
     };
     match s.ctrl.send(cmd).await {
         Ok(()) => (StatusCode::OK, format!("{action}\n")).into_response(),
@@ -303,8 +332,13 @@ async fn power(
     }
 }
 
-/// Live run-state from the supervisor; `None` = supervisor gone.
+/// Live run-state: a one-time-setup phase ("installing", "starting") overrides; otherwise ask the
+/// supervisor. `None` = supervisor gone.
 async fn query_status(s: &WebState) -> Option<String> {
+    let phase = s.phase.read().ok().map(|p| p.clone()).unwrap_or_default();
+    if !phase.is_empty() {
+        return Some(phase);
+    }
     let (tx, rx) = tokio::sync::oneshot::channel();
     s.ctrl.send(Control::Status(tx)).await.ok()?;
     rx.await.ok()
@@ -353,9 +387,56 @@ fn content_type(ext: Option<&str>) -> &'static str {
     }
 }
 
+/// Home-screen payload: live status + static VM facts. `console` reflects whether the guest's
+/// serial console socket actually exists, so the UI can hide a dead-end serial button.
+async fn info(State(s): State<Arc<WebState>>) -> impl IntoResponse {
+    #[derive(Serialize)]
+    struct InfoResponse {
+        status: String,
+        console: bool,
+        #[serde(flatten)]
+        info: VmInfo,
+    }
+    let status = query_status(&s).await.unwrap_or_else(|| "unknown".into());
+    let console = s.console_sock.exists();
+    Json(InfoResponse { status, console, info: s.info.clone() })
+}
 #[cfg(test)]
 mod tests {
-    use super::collect_port_forwards;
+    use super::{collect_port_forwards, origin_allowed};
+    use axum::http::{HeaderMap, HeaderName};
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(HeaderName::from_bytes(k.as_bytes()).unwrap(), v.parse().unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn origin_absent_is_allowed_for_cli_clients() {
+        assert!(origin_allowed(&headers(&[("host", "vm.local:8006")]), &[]));
+    }
+
+    #[test]
+    fn same_origin_and_forwarded_host_are_allowed() {
+        let h = headers(&[("origin", "http://vm.local:8006"), ("host", "vm.local:8006")]);
+        assert!(origin_allowed(&h, &[]));
+        let h = headers(&[
+            ("origin", "https://qemu.example.com"),
+            ("host", "10.0.0.2:8006"),
+            ("x-forwarded-host", "qemu.example.com"),
+        ]);
+        assert!(origin_allowed(&h, &[]));
+    }
+
+    #[test]
+    fn cross_origin_is_rejected_unless_allowlisted() {
+        let h = headers(&[("origin", "https://evil.example"), ("host", "vm.local:8006")]);
+        assert!(!origin_allowed(&h, &[]));
+        assert!(origin_allowed(&h, &["https://evil.example".to_string()]));
+    }
 
     #[test]
     fn parses_hostfwd_from_command() {
@@ -385,16 +466,4 @@ mod tests {
     fn empty_when_no_forwards() {
         assert!(collect_port_forwards("-nic none", "").is_empty());
     }
-}
-
-/// Home-screen payload: live status + static VM facts.
-async fn info(State(s): State<Arc<WebState>>) -> impl IntoResponse {
-    #[derive(Serialize)]
-    struct InfoResponse {
-        status: String,
-        #[serde(flatten)]
-        info: VmInfo,
-    }
-    let status = query_status(&s).await.unwrap_or_else(|| "unknown".into());
-    Json(InfoResponse { status, info: s.info.clone() })
 }

@@ -1,5 +1,4 @@
 #![forbid(unsafe_code)]
-#![allow(dead_code)] // some config fields / Control API wired ahead of consumers
 
 //! vmd — OS-agnostic QEMU supervisor. Guests are pure config (vmd.toml): vmd fills {placeholders},
 //! runs install/seed/prepare/sidecars, spawns QEMU and drives the power lifecycle over QMP.
@@ -40,12 +39,11 @@ async fn main() {
         "run" => run().await,
         "print" | "dry-run" => print_plan(),
         "power" => power(rest).await,
-        "console" | "install" | "clone" => Err(anyhow::anyhow!("subcommand '{cmd}' not ported yet")),
         "-h" | "--help" | "help" => {
             print_help();
             Ok(())
         }
-        other => Err(anyhow::anyhow!("unknown subcommand '{other}' (run, power)")),
+        other => Err(anyhow::anyhow!("unknown subcommand '{other}' (run, print, power)")),
     };
     if let Err(e) = result {
         log::error(format!("{e:#}"));
@@ -70,35 +68,9 @@ async fn run() -> Result<()> {
     let uuid = util::get_or_create_uuid(&stem)?;
     let vars = build_vars(&cfg, &uuid);
 
-    // ---- one-time setup ----
-    // Copy the system's scripts into {dir}/scripts first, so install runs the user-editable copy.
+    // Copy the system's scripts into {dir}/scripts first, so install runs the user-editable copy
+    // (and /info can scan the effective launcher for port forwards).
     ensure_scripts(&cfg).await?;
-    if let Some(inst) = &cfg.install {
-        let script = effective_install(&cfg, inst)?;
-        install::ensure(&cfg, inst, &script, &vars).await?; // external installer, gated by policy
-    }
-    for s in &cfg.seed {
-        seed::ensure(&substitute(&s.template, &vars), &substitute(&s.to, &vars))?; // e.g. OVMF NVRAM
-    }
-    for p in &cfg.prepare {
-        run_prepare(&substitute(p, &vars)).await?; // e.g. mkdir / tap setup
-    }
-    let mut items: Vec<(String, Option<String>)> = cfg
-        .sidecars
-        .iter()
-        .map(|s| {
-            (
-                substitute(&s.command, &vars),
-                s.wait_for.as_ref().map(|w| substitute(w, &vars)),
-            )
-        })
-        .collect();
-    if cfg.tpm {
-        let (cmd, sock) = tpm_command(&stem); // built-in vTPM: swtpm, ready before QEMU
-        tokio::fs::create_dir_all(format!("{stem}.tpm")).await.ok();
-        items.insert(0, (cmd, Some(sock)));
-    }
-    let mut sidecars = sidecar::Sidecars::start(&items, &vars).await?; // kept up across VM restarts
 
     // ---- resolve the launch command (also feeds /info) ----
     let qmp_sock = cfg.qmp_sock();
@@ -106,9 +78,8 @@ async fn run() -> Result<()> {
     let Some((prog, args)) = argv.split_first() else {
         bail!("empty launch/qemu command for guest '{}'", cfg.name);
     };
-    let _ = std::fs::write(format!("{stem}.qemu.cmd"), format!("{}\n", argv.join(" ")));
 
-    // ---- web console + power API (persists across VM restarts) ----
+    // ---- web console + power API (up before install so the install VM is watchable) ----
     let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::channel(8);
     // Mint a CSPRNG session secret only when auth is on; refuse to serve a password-protected console
     // if real entropy is unavailable (never fall back to a guessable token).
@@ -119,6 +90,8 @@ async fn run() -> Result<()> {
         log::info("web auth: password required");
         util::random_token().context("web session token")?
     };
+    // Overrides /status while one-time setup runs (nobody is reading the control channel yet).
+    let phase = std::sync::Arc::new(std::sync::RwLock::new(String::from("starting")));
     let web_state = web::WebState {
         vnc_sock: cfg.vnc_sock(),
         console_sock: cfg.console_sock(),
@@ -126,9 +99,41 @@ async fn run() -> Result<()> {
         allowed_origins: cfg.web_allowed_origins.clone(),
         password: cfg.web_password.clone(),
         token: web_token,
+        phase: phase.clone(),
         info: build_info(&cfg, &vars, &uuid, &argv),
     };
-    tokio::spawn(web::serve(cfg.web_port, web_state));
+    // Bind here so a taken port is fatal instead of a silently console-less VM.
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", cfg.web_port))
+        .await
+        .with_context(|| format!("web bind :{}", cfg.web_port))?;
+    tokio::spawn(web::serve(listener, web_state));
+
+    // ---- one-time setup ----
+    if let Some(inst) = &cfg.install {
+        *phase.write().unwrap() = "installing".into();
+        let script = effective_install(&cfg, inst)?;
+        install::ensure(&cfg, inst, &script, &vars).await?; // external installer, gated by policy
+        *phase.write().unwrap() = "starting".into();
+    }
+    for s in &cfg.seed {
+        seed::ensure(&substitute(&s.template, &vars), &substitute(&s.to, &vars))?;
+        // e.g. OVMF NVRAM
+    }
+    for p in &cfg.prepare {
+        run_prepare(&substitute(p, &vars)).await?; // e.g. mkdir / tap setup
+    }
+    let mut items: Vec<(String, Option<String>)> = cfg
+        .sidecars
+        .iter()
+        .map(|s| (substitute(&s.command, &vars), s.wait_for.as_ref().map(|w| substitute(w, &vars))))
+        .collect();
+    if cfg.tpm {
+        let (cmd, sock) = tpm_command(&stem); // built-in vTPM: swtpm, ready before QEMU
+        tokio::fs::create_dir_all(format!("{stem}.tpm")).await.ok();
+        items.insert(0, (cmd, Some(sock)));
+    }
+    let mut sidecars = sidecar::Sidecars::start(&items, &vars).await?; // kept up across VM restarts
+    phase.write().unwrap().clear(); // live status now comes from the supervisor
 
     // ---- boot / supervise / (idle & restart) loop ----
     loop {
@@ -193,13 +198,8 @@ async fn http_local(port: u16, method: &str, path: &str, password: &str) -> Resu
     let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .with_context(|| format!("connect 127.0.0.1:{port} (is vmd running?)"))?;
-    let auth = if password.is_empty() {
-        String::new()
-    } else {
-        format!("X-VMD-Password: {password}\r\n")
-    };
-    let req =
-        format!("{method} {path} HTTP/1.0\r\nHost: 127.0.0.1\r\n{auth}Content-Length: 0\r\n\r\n");
+    let auth = if password.is_empty() { String::new() } else { format!("X-VMD-Password: {password}\r\n") };
+    let req = format!("{method} {path} HTTP/1.0\r\nHost: 127.0.0.1\r\n{auth}Content-Length: 0\r\n\r\n");
     s.write_all(req.as_bytes()).await?;
     let mut buf = Vec::new();
     s.read_to_end(&mut buf).await?;
@@ -223,9 +223,7 @@ fn resolve_command(cfg: &Config, vars: &Vars) -> Vec<String> {
 /// (hostfwd may live inside it) and `PORT_FWD`.
 fn build_info(cfg: &Config, vars: &Vars, uuid: &str, argv: &[String]) -> web::VmInfo {
     let command = argv.join(" ");
-    let launcher = effective_launch(cfg)
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .unwrap_or_default();
+    let launcher = effective_launch(cfg).and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
     let scan = format!("{command}\n{launcher}");
     let port_fwd_env = std::env::var("PORT_FWD").unwrap_or_default();
     let get = |k: &str| vars.get(k).cloned().unwrap_or_default();

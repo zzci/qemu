@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  supervisor:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: supervisor
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            supervisor/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('supervisor/Cargo.lock') }}
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: supervisor/ui
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: supervisor/ui/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck + build
+        run: npm run build
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Syntax-check guest scripts
+        run: |
+          set -e
+          for f in rootfs/build/bin/* rootfs/build/templates/*/install \
+                   rootfs/build/templates/*/launcher rootfs/build/templates/qemu/common.sh; do
+            bash -n "$f"
+          done
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q shellcheck
+          shellcheck -x rootfs/build/bin/* rootfs/build/templates/*/install \
+            rootfs/build/templates/*/launcher rootfs/build/templates/qemu/common.sh

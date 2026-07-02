@@ -4,7 +4,8 @@
 # optional URL / ALPINE_MIRROR come from [guest.x.install] keys. FORCE=1 rebuilds.
 set -euo pipefail
 LOG_TAG=install
-source /build/bin/qemu-common.sh
+# shellcheck source=rootfs/build/templates/qemu/common.sh
+source /build/templates/qemu/common.sh
 
 URL="${URL:-}"
 DISK="${VMD_DISK:?VMD_DISK not set}"
@@ -24,6 +25,20 @@ mkdir -p "$(dirname "$DISK")"
 tmp="$DISK.download"
 log "downloading $URL"
 curl -fL -C - -o "$tmp" "$URL" || die "download failed: $URL"
+
+# Integrity: an explicit SHA512 pin from [guest.x.install] wins; else use the mirror's
+# published <file>.sha512. This image becomes the guest disk — refuse a mismatch.
+if [ -n "${SHA512:-}" ]; then
+    echo "$SHA512  $tmp" | sha512sum -c - >/dev/null 2>&1 || die "sha512 mismatch for $URL"
+    log "sha512 OK (pinned)"
+elif sum="$(curl -fsSL "$URL.sha512" 2>/dev/null)" && [ -n "$sum" ]; then
+    echo "${sum%%[[:space:]]*}  $tmp" | sha512sum -c - >/dev/null 2>&1 \
+        || die "sha512 mismatch for $URL (mirror checksum: ${sum%%[[:space:]]*})"
+    log "sha512 OK (mirror)"
+else
+    log "WARN: no checksum available for $URL — set sha512 in [guest.x.install] to enforce"
+fi
+
 qemu-img convert -O qcow2 "$tmp" "$DISK"
 rm -f "$tmp"
 [ -n "$SIZE" ] && qemu-img resize "$DISK" "$SIZE" >/dev/null

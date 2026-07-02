@@ -63,10 +63,7 @@ impl Qmp {
             json!({ "execute": command, "arguments": arguments })
         };
         let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(Cmd { req, reply })
-            .await
-            .map_err(|_| anyhow!("QMP connection closed"))?;
+        self.tx.send(Cmd { req, reply }).await.map_err(|_| anyhow!("QMP connection closed"))?;
         rx.await.map_err(|_| anyhow!("QMP connection closed"))?
     }
 
@@ -153,8 +150,16 @@ async fn dispatch_task(
 fn notable_event(ev: &str) -> bool {
     matches!(
         ev,
-        "SHUTDOWN" | "POWERDOWN" | "RESET" | "STOP" | "RESUME" | "SUSPEND" | "SUSPEND_DISK"
-            | "GUEST_PANICKED" | "WAKEUP" | "WATCHDOG"
+        "SHUTDOWN"
+            | "POWERDOWN"
+            | "RESET"
+            | "STOP"
+            | "RESUME"
+            | "SUSPEND"
+            | "SUSPEND_DISK"
+            | "GUEST_PANICKED"
+            | "WAKEUP"
+            | "WATCHDOG"
     )
 }
 

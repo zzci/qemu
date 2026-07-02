@@ -41,9 +41,10 @@ policy      = "auto"
 source_iso  = "/images/win11.iso"
 virtio_iso  = "/images/virtio-win.iso"
 username    = "docker"
-password    = "admin"
+password    = "admin"             # change this — it becomes the guest admin password (RDP!)
 language    = "en-US"
 image_index = 1
+# virtio_sha256 = "<hex>"         # verify a downloaded virtio-win.iso (skipped when unset)
 
 # `sidecars` runs extra programs/scripts next to the VM (VMD_<KEY> env; optional ready-path):
 # sidecars = [ { command = "{dir}/scripts/net-setup", wait_for = "/run/vmd-net.ready" } ]
@@ -59,3 +60,4 @@ launch    = "alpine"
 
 [guest.alpine.install]
 policy = "auto"    # fetches the official Alpine cloud image (see {dir}/scripts/install)
+# sha512 = "<hex>" # pin the image checksum; defaults to the mirror's <file>.sha512 when present

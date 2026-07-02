@@ -10,14 +10,16 @@ services:
     stop_grace_period: 3m       # let the guest ACPI-shut down before SIGKILL
     devices:
       - /dev/kvm
-      # - /dev/net/tun          # uncomment for a bridge/macvlan netdev in vmd.toml
+      # - /dev/net/tun          # uncomment for a bridge/tap netdev (see docs/common/networking-and-devices.md)
     environment:
       ZSRV_vmd: "true"          # enable the single vmd service (nothing starts unless enabled)
       VMD_OS: "win11"           # which [guest.X] in vmd.toml to boot (win11 | alpine | …)
     volumes:
-      - ./storage:/storage                          # persistent state (also where vmd.toml can live)
-      - ./images:/images:ro                         # your ISOs: images/win11.iso, images/virtio-win.iso
-      - ./supervisor/vmd.toml:/storage/vmd.toml:ro  # your config (overrides the baked /etc/vmd/vmd.toml)
+      - ./vms:/vms              # persistent guests; vmd.toml is auto-seeded here on first run
+      - ./images:/images:ro     # your ISOs: images/win11.iso, images/virtio-win.iso
     ports:
-      - "8006:8006"             # web console at / (VNC + serial console + power controls)
-      - "3389:3389"             # Windows RDP (forwarded by the user-net in vmd.toml)
+      # Bound to localhost by default: the web console ships without a password and the guest's
+      # default account is well-known — set [web] password in vmd.toml (and change the guest
+      # credentials) BEFORE removing the 127.0.0.1 prefix to expose them beyond this host.
+      - "127.0.0.1:8006:8006"   # web console (VNC + serial console + power controls)
+      - "127.0.0.1:3389:3389"   # Windows RDP (forwarded by the user-net in the win11 launcher)

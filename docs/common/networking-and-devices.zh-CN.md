@@ -1,172 +1,162 @@
-# 网络与设备直通
+# 网络、串口、USB 与设备
 
 [English](./networking-and-devices.md) · **中文**
 
-如何为客户机配置网卡、USB 设备和串口。以下对 `zzci/qemu` 引擎通用;示例以 Windows 客户机为例。概览见
-[根 README](../../README.zh-CN.md),Windows 细节见 [windows.zh-CN.md](../guests/windows.zh-CN.md)。
+客户机看到的一切设备都由**它的 launcher 脚本**决定 —— `{dir}/scripts/launcher`,首启从模板播种
+的可编辑副本。改网络、串口、USB 或任何设备:编辑该文件,然后重启 VM(`shutdown` + `start`,或
+重启容器)。`vmd print` 可在不运行的情况下查看解析后的完整命令。
 
-几个旋钮覆盖常见场景 —— `NETWORK`、`USB`、`SERIAL` 和原始 `EXTRA_ARGS` 逃生口 —— 再配上对应的 `docker` 设备/权限参数,
-让宿主资源在容器内可见。
+launcher 通过 `VMD_*` 环境变量拿到参数(`VMD_MAC`、`VMD_QMP`、`VMD_CONSOLE_SOCK` 等)——见
+[engine.zh-CN.md](./engine.zh-CN.md)。
 
 ---
 
 ## 网络
 
-用 `NETWORK` 选择模式。每块客户机网卡在系统里显示为一个适配器。
+### 1. 用户模式 / NAT(默认)
 
-| 模式 | 行为 | 容器要求 |
-|------|------|----------|
-| `user`(默认) | QEMU 用户态(SLIRP)NAT;出站可用 + `PORT_FWD` 宿主→客户机端口转发 | 无 |
-| `bridge` | 在已有宿主网桥 `$BRIDGE` 上建 `tap`;客户机加入该二层(从局域网 DHCP) | `--cap-add NET_ADMIN`、`--device=/dev/net/tun`、网桥已存在 |
-| `host` | 同 `bridge`,用于 `docker run --network host` + 宿主网桥 | 同 `bridge` |
-| `macvlan` | 在 `$MACVLAN` 网卡上建 `macvtap`;客户机经 DHCP 获得自己的局域网 IP | `--cap-add NET_ADMIN`、`--device-cgroup-rule='c *:* rwm'`、一个 docker `macvlan` 网络 |
-| `none` | 无网卡 | 无 |
-
-客户机 MAC 由磁盘路径派生(跨重启与克隆保持稳定,DHCP 租约不变)。`user` 模式经容器访问 RDP;
-`bridge`/`macvlan` 模式客户机有真实局域网 IP,直接 RDP/SSH 即可。
-
-### user(NAT)—— 默认
-
-`PORT_FWD` 用 `host-guest` 对(逗号分隔)列出宿主↔客户机转发 —— 暴露客户机端口的通用机制(仅 `user`
-模式有意义)。每个客户机有合理默认(win11 `3389-3389` 即 RDP,alpine `2222-22` 即 SSH);需要时覆盖成任意映射。
-
-```yaml
-environment:
-  NETWORK: "user"
-  PORT_FWD: "3389-3389,8080-80"   # 宿主 3389 -> 客户机 3389(RDP),宿主 8080 -> 客户机 80
-ports:
-  - "3389:3389"                   # 转发了的宿主端口也要发布出来
-  - "8080:8080"
-```
-
-### bridge
+模板自带 QEMU 用户态网络——零宿主配置、出站 NAT、按端口做入站转发:
 
 ```bash
-docker run -d --name win11 --device=/dev/kvm --device=/dev/net/tun --cap-add NET_ADMIN \
-  -e NETWORK=bridge -e BRIDGE=br0 \
-  -v "$PWD/storage:/storage" zzci/qemu
+-netdev user,id=net0,hostfwd=tcp::3389-:3389 \
+-device "virtio-net-pci,netdev=net0,mac=${VMD_MAC}"
 ```
 
-### macvlan(客户机获得真实局域网 IP)
+- 追加 `hostfwd=` 段即可增加转发(逗号分隔,宿主端口`-:`客户机端口):
+  `hostfwd=tcp::3389-:3389,hostfwd=tcp::2222-:22,hostfwd=udp::5353-:53`
+- 再由 Docker 发布宿主端口(`-p 127.0.0.1:3389:3389`,仅在可信网络才去掉前缀)。转发会显示在控制台首页(解析自 launcher 与可选
+  的 `PORT_FWD="3389-3389,2222-22"` 环境变量)。
+- 优点:处处可用。缺点:客户机在 NAT 后(除转发外无入站),性能略低。
 
-```bash
-docker network create -d macvlan \
-  --subnet=192.168.1.0/24 --gateway=192.168.1.1 -o parent=enp1s0 lan
+### 2. 桥接 / tap(客户机上真实二层)
 
-docker run -d --name win11 --network lan \
-  --device=/dev/kvm --device=/dev/net/tun \
-  --cap-add NET_ADMIN --device-cgroup-rule='c *:* rwm' \
-  -e NETWORK=macvlan -e MACVLAN=eth0 \
-  -v "$PWD/storage:/storage" zzci/qemu
-```
+给容器 `--cap-add NET_ADMIN --device /dev/net/tun`,用 `vmd.toml` 的 `prepare` 钩子在启动前建好
+桥和 tap,再把 QEMU 指到 tap:
 
-`MACVLAN` 接受逗号列表以创建**多块** macvtap 网卡(`MACVLAN=eth0,eth1`)。
-
-> macvlan 注意:设计上**宿主**无法直接访问 macvlan 客户机 IP(同局域网其它机器可以)。若需宿主↔客户机,
-> 在宿主上加一个 macvlan 子接口。
-
-### 同时两块网卡(如 macvlan + 一块用于宿主访问的 NAT 网卡)
-
-`NETWORK` 只选一种模式。要加第二块网卡,用 `EXTRA_ARGS` 追加原始 netdev —— 用**不同的 id 和 MAC**
-(内置网卡用 `net0`/`net1…`):
-
-```yaml
-environment:
-  NETWORK: "macvlan"
-  MACVLAN: "eth0"
-  EXTRA_ARGS: "-netdev user,id=usernet,hostfwd=tcp::3389-:3389 -device virtio-net-pci,netdev=usernet,mac=52:54:00:12:34:56"
-```
-
-这样客户机既经 macvlan 拿到局域网 IP,**又**有一块 NAT 网卡,其 `3389` 可从宿主访问 —— 正好绕开 macvlan
-的宿主↔客户机限制。Windows 按接口 metric 选路。
-
----
-
-## USB 直通
-
-按 **vendor:product**(十六进制)直通宿主 USB 设备,逗号分隔:
-
-```yaml
-environment:
-  USB: "0bda:8153,1d6b:0002"
+```toml
+[guest.win11]
+prepare = [
+  "ip link add br0 type bridge", "ip link set br0 up",
+  "ip tuntap add dev tap0 mode tap", "ip link set tap0 master br0", "ip link set tap0 up",
+]
 ```
 
 ```bash
-docker run -d --name win11 --device=/dev/kvm --device=/dev/bus/usb \
-  -e USB=0bda:8153 -v "$PWD/storage:/storage" zzci/qemu
+-netdev tap,id=net0,ifname=tap0,script=no,downscript=no \
+-device "virtio-net-pci,netdev=net0,mac=${VMD_MAC}"
 ```
 
-每一项生成一个 `-device usb-host,vendorid=0x…,productid=0x…`,挂到客户机的 xHCI 控制器。用宿主上的
-`lsusb` 查 ID(`1d6b:0002` 这种形式)。
+`br0` 接到哪里决定可达性:把容器的 `eth0` 加入桥,或让容器跑在 Docker **macvlan** 网络上,客户
+机即可直接获得局域网地址:
 
-**要求与注意**
+```bash
+docker network create -d macvlan --subnet 192.168.1.0/24 --gateway 192.168.1.1 \
+  -o parent=eth0 lan
+docker run --network lan --cap-add NET_ADMIN --device /dev/net/tun ... zzci/qemu
+```
 
-- 宿主设备必须在容器内可见:`--device=/dev/bus/usb`(或 `--privileged`)。
-- 按 USB ID 匹配,且发生在**启动时** —— 不支持热插拔,两个同型号设备会有歧义。要从多个同型号设备中指定一个,
-  用 `EXTRA_ARGS` 按总线/端口寻址:
+(容器内把 `eth0` 与 `tap0` 桥起来,客户机直接向局域网 DHCP。)
 
-  ```yaml
-  EXTRA_ARGS: "-device usb-host,hostbus=1,hostport=4"   # 总线/端口见 `lsusb -t`
-  ```
-- **USB 转串口适配器**(FTDI / CP210x / CH340 等)通常最好按 USB 直通,让客户机加载自己的驱动并暴露 COM 口 ——
-  见下一节。
+### 3. 多网卡
+
+重复 netdev/device 对,id 区分;额外 MAC 可自定或从稳定的 `VMD_MAC` 派生:
+
+```bash
+-netdev user,id=net0,hostfwd=tcp::3389-:3389 -device virtio-net-pci,netdev=net0,mac=${VMD_MAC} \
+-netdev tap,id=net1,ifname=tap0,script=no,downscript=no -device virtio-net-pci,netdev=net1,mac=52:54:00:aa:bb:01
+```
+
+`VMD_MAC` 由磁盘路径推导,重启后 MAC(及 DHCP 租约)保持不变。
 
 ---
 
 ## 串口
 
-按来源分三种做法:
+### 内置串口控制台
 
-### 1. USB 转串口适配器 —— 按 USB 直通(推荐)
-
-让客户机接管适配器,用其原生驱动创建 COM 口:
+把 COM1 接到 vmd 的控制台 socket,Web 终端(`/console`)即可用:
 
 ```bash
-docker run -d --device=/dev/kvm --device=/dev/bus/usb \
-  -e USB=0403:6001 ...        # 例如一个 FTDI 适配器
+-serial "unix:${VMD_CONSOLE_SOCK},server,nowait"
 ```
 
-### 2. 真实宿主串口 —— `SERIAL`(一等能力)
+Alpine 模板默认如此(`console=ttyS0`)。Windows 用处有限,win11 模板未接——需要 COM1 就自行加上。
 
-`SERIAL` 接受逗号分隔的宿主 TTY 路径,每个变成客户机的一个 `pci-serial` COM 口(`ser0`、`ser1`……)。
-用 `--device=` 把 TTY 暴露给容器:
+### 串口映射到 TCP
+
+```bash
+-serial tcp:0.0.0.0:4555,server,nowait      # 容器内的裸 TCP 服务
+# telnet 形式:-serial telnet:0.0.0.0:4555,server,nowait
+```
+
+配合 `-p 127.0.0.1:4555:4555` 发布。任何连上该端口的连接都直通客户机 COM 口。
+
+### 直通宿主机串口设备
+
+先把设备映射进容器,再交给 QEMU:
 
 ```yaml
-environment:
-  SERIAL: "/dev/ttyUSB0,/dev/ttyS0"
 devices:
-  - /dev/ttyUSB0
-  - /dev/ttyS0               # 每个 TTY 都必须在容器内可见
+  - /dev/kvm
+  - /dev/ttyUSB0            # 物理串口适配器
 ```
 
 ```bash
-docker run -d --device=/dev/kvm --device=/dev/ttyUSB0 -e SERIAL=/dev/ttyUSB0 ...
+-serial /dev/ttyUSB0
 ```
 
-`pci-serial` 是现代 PCIe COM 口。要传统的 COM1/COM2(ISA)或 socket/telnet 后端,用 `EXTRA_ARGS`(见下)。
+### 多个 COM 口
 
-### 3. 其它 —— `EXTRA_ARGS`
-
-```yaml
-# 传统 ISA COM 口
-EXTRA_ARGS: "-chardev serial,id=ser0,path=/dev/ttyUSB0 -device isa-serial,chardev=ser0"
-# 把串口经网络暴露(用 telnet 连);用 -p 7000:7000 发布
-EXTRA_ARGS: "-chardev socket,id=ser0,host=0.0.0.0,port=7000,server=on,wait=off -device pci-serial,chardev=ser0"
-```
-
-> `SERIAL` 用的 id 是 `ser0`、`ser1`……;若你同时用 `EXTRA_ARGS` 加串口设备,请用不同 id 以免冲突。
+每个 `-serial …` 依次是 COM1、COM2……;`-serial null` 跳过一个槽位。更多端口用
+`-device pci-serial` 搭配显式 chardev。
 
 ---
 
-## `EXTRA_ARGS` 万能逃生口
+## USB
 
-`EXTRA_ARGS` 原样追加到 QEMU 命令行(并存入每机 conf),所以 QEMU 支持但没有专用旋钮的东西都能加在这:
-额外网卡、串口/并口、额外磁盘、PCI 直通(`vfio-pci`)、自定义 `-device` 拓扑等。务必带上对应的 `docker`
-参数(`--device=…`、`--cap-add …`、`--device-cgroup-rule=…`),让宿主资源在容器内可达。
+win11 模板已带 USB 控制器和平板指针:
 
-```yaml
-environment:
-  EXTRA_ARGS: "-drive file=/storage/data.qcow2,if=none,id=d1,format=qcow2 -device virtio-blk-pci,drive=d1"
+```bash
+-device qemu-xhci -device usb-tablet
 ```
 
-> 这些直通配方是配置参考 —— 具体设备路径、ID 和宿主能力因机器而异,请在你的主机上验证。
+### 宿主机 USB 直通
+
+1. 把 USB 总线给容器(compose):
+
+```yaml
+devices:
+  - /dev/kvm
+  - /dev/bus/usb            # 整条总线;或单个 /dev/bus/usb/BBB/DDD
+```
+
+2. 按厂商/产品号(拔插后仍生效)或按总线/端口(固定物理口)挂载:
+
+```bash
+-device usb-host,vendorid=0x046d,productid=0xc52b     # lsusb → ID 046d:c52b
+-device usb-host,hostbus=1,hostport=2
+```
+
+USB3 设备经 qemu-xhci 直接可用。等时传输设备(音频、摄像头)效果不一,优先按总线/端口挂载。
+
+### 镜像文件模拟 U 盘
+
+```bash
+-drive file=/vms/win11/usbdisk.img,if=none,id=usb1,format=raw \
+-device usb-storage,drive=usb1
+```
+
+---
+
+## 其他设备
+
+- **显示**:模板使用 `-device "virtio-vga,xres=1920,yres=1080"`,改数字即改默认分辨率(virtio
+  GPU 驱动装好后客户机内也能切换)。
+- **额外磁盘**:加一对 `-drive file=…,if=none,id=disk1 -device virtio-blk-pci,drive=disk1`;
+  镜像在 `prepare` 里创建(`qemu-img create -f qcow2 {dir}/data.qcow2 100G`)。
+- **光驱**:`-drive file=/images/tools.iso,if=none,id=cd1,media=cdrom -device ide-cd,drive=cd1,bus=ahci.2`
+  (win11 模板已有 `ahci` 控制器)。
+- **声音**:`-audiodev none,id=snd0 -device ich9-intel-hda -device hda-output,audiodev=snd0`
+  (VNC 不传声音;Windows 建议用 RDP 听声)。
+
+改完先 `vmd print` 检查命令,再重启客户机生效。

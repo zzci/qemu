@@ -1,180 +1,167 @@
-# Networking & device passthrough
+# Networking, serial, USB & devices
 
 **English** · [中文](./networking-and-devices.zh-CN.md)
 
-How to give a guest network adapters, USB devices and serial ports. These apply to the `zzci/qemu`
-engine in general; the examples use the Windows guest. See the [root README](../../README.md) for the
-overview and [windows.md](../guests/windows.md) for the Windows specifics.
+Everything the guest sees is built by **its launcher script** — `{dir}/scripts/launcher`, your
+editable copy seeded from the template on first boot. To change networking, serial ports, USB or
+any device: edit that file and power-cycle the VM (`shutdown` + `start`, or restart the
+container). `vmd print` shows the resolved command without running anything.
 
-A few knobs cover the common cases — `NETWORK`, `USB`, `SERIAL`, and the raw `EXTRA_ARGS` escape hatch — plus
-the matching `docker` device/cap flags so the host resource is visible inside the container.
+The launcher receives `VMD_*` env vars (`VMD_MAC`, `VMD_QMP`, `VMD_CONSOLE_SOCK`, …) — see
+[engine.md](./engine.md).
 
 ---
 
 ## Networking
 
-Select the mode with `NETWORK`. Each guest NIC shows up as one adapter in the guest.
+### 1. User mode / NAT (default)
 
-| Mode | Behavior | Container requirements |
-|------|----------|------------------------|
-| `user` (default) | QEMU user-mode (SLIRP) NAT; outbound works + `PORT_FWD` host→guest port forwards | none |
-| `bridge` | a `tap` on an existing host bridge `$BRIDGE`; guest joins that L2 (DHCP from the LAN) | `--cap-add NET_ADMIN`, `--device=/dev/net/tun`, the bridge present |
-| `host` | same as `bridge`, intended for `docker run --network host` + a host bridge | as `bridge` |
-| `macvlan` | a `macvtap` on `$MACVLAN` iface(s); guest gets its own LAN IP via DHCP | `--cap-add NET_ADMIN`, `--device-cgroup-rule='c *:* rwm'`, a docker `macvlan` network |
-| `none` | no network adapter | none |
-
-The guest MAC is derived from the disk path (stable across restarts and clones, so DHCP leases stay
-put). In `user` mode you reach RDP through the container; in `bridge`/`macvlan` the guest has a real
-LAN IP, so RDP/SSH straight to it.
-
-### user (NAT) — the default
-
-`PORT_FWD` lists host↔guest forwards as `host-guest` pairs, comma-separated — the generic mechanism
-for exposing guest ports (only meaningful in `user` mode). Each guest sets a sensible default
-(win11 `3389-3389` for RDP, alpine `2222-22` for SSH); override it to map whatever you need.
-
-```yaml
-environment:
-  NETWORK: "user"
-  PORT_FWD: "3389-3389,8080-80"   # host 3389 -> guest 3389 (RDP), host 8080 -> guest 80
-ports:
-  - "3389:3389"                   # also publish the host ports you forwarded
-  - "8080:8080"
-```
-
-### bridge
+The templates ship QEMU's user-mode network — zero host setup, outbound NAT, per-port inbound
+forwards:
 
 ```bash
-docker run -d --name win11 --device=/dev/kvm --device=/dev/net/tun --cap-add NET_ADMIN \
-  -e NETWORK=bridge -e BRIDGE=br0 \
-  -v "$PWD/storage:/storage" zzci/qemu
+-netdev user,id=net0,hostfwd=tcp::3389-:3389 \
+-device "virtio-net-pci,netdev=net0,mac=${VMD_MAC}"
 ```
 
-### macvlan (guest gets a real LAN IP)
+- Add forwards by appending `hostfwd=` segments (comma-separated, host-port`-:`guest-port):
+  `hostfwd=tcp::3389-:3389,hostfwd=tcp::2222-:22,hostfwd=udp::5353-:53`
+- Then publish the host side from Docker (`-p 127.0.0.1:3389:3389`, drop the prefix only for trusted networks). Forwards are shown on the console home
+  screen (parsed from the launcher + the optional `PORT_FWD="3389-3389,2222-22"` env).
+- Pros: works everywhere. Cons: guest is NATed (no inbound except forwards), slightly slower.
 
-```bash
-docker network create -d macvlan \
-  --subnet=192.168.1.0/24 --gateway=192.168.1.1 -o parent=enp1s0 lan
+### 2. Bridged / tap (guest on a real L2 segment)
 
-docker run -d --name win11 --network lan \
-  --device=/dev/kvm --device=/dev/net/tun \
-  --cap-add NET_ADMIN --device-cgroup-rule='c *:* rwm' \
-  -e NETWORK=macvlan -e MACVLAN=eth0 \
-  -v "$PWD/storage:/storage" zzci/qemu
-```
+Give the container `--cap-add NET_ADMIN --device /dev/net/tun`, create a bridge + tap before boot
+(use the guest's `prepare` hooks in `vmd.toml`), and point QEMU at the tap:
 
-`MACVLAN` accepts a comma list for **multiple** macvtap NICs (`MACVLAN=eth0,eth1`).
-
-> macvlan caveat: by design the **host** cannot reach a macvlan guest IP directly (other LAN
-> machines can). Add a macvlan sub-interface on the host if you need host↔guest.
-
-### Two NICs at once (e.g. macvlan + a NAT NIC for host access)
-
-`NETWORK` selects a single mode. To add a second adapter, append a raw netdev via `EXTRA_ARGS` —
-use a **distinct id and MAC** (the built-in NICs use `net0`/`net1…`):
-
-```yaml
-environment:
-  NETWORK: "macvlan"
-  MACVLAN: "eth0"
-  EXTRA_ARGS: "-netdev user,id=usernet,hostfwd=tcp::3389-:3389 -device virtio-net-pci,netdev=usernet,mac=52:54:00:12:34:56"
-```
-
-This gives the guest its LAN IP via macvlan **and** a NAT NIC whose `3389` is reachable from the
-host — handy because macvlan otherwise blocks host↔guest. Windows picks the route by interface metric.
-
----
-
-## USB passthrough
-
-Pass host USB devices by **vendor:product** (hex), comma-separated:
-
-```yaml
-environment:
-  USB: "0bda:8153,1d6b:0002"
+```toml
+[guest.win11]
+prepare = [
+  "ip link add br0 type bridge", "ip link set br0 up",
+  "ip tuntap add dev tap0 mode tap", "ip link set tap0 master br0", "ip link set tap0 up",
+]
 ```
 
 ```bash
-docker run -d --name win11 --device=/dev/kvm --device=/dev/bus/usb \
-  -e USB=0bda:8153 -v "$PWD/storage:/storage" zzci/qemu
+-netdev tap,id=net0,ifname=tap0,script=no,downscript=no \
+-device "virtio-net-pci,netdev=net0,mac=${VMD_MAC}"
 ```
 
-Each entry becomes a `-device usb-host,vendorid=0x…,productid=0x…` attached to the guest's xHCI
-controller. Find IDs on the host with `lsusb` (the `1d6b:0002` form).
+What `br0` connects to decides reachability: attach the container's `eth0` to it, or run the
+container on a Docker **macvlan** network so the guest gets an address on your LAN:
 
-**Requirements & caveats**
+```bash
+docker network create -d macvlan --subnet 192.168.1.0/24 --gateway 192.168.1.1 \
+  -o parent=eth0 lan
+docker run --network lan --cap-add NET_ADMIN --device /dev/net/tun ... zzci/qemu
+```
 
-- The host device must be visible inside the container: `--device=/dev/bus/usb` (or `--privileged`).
-- Matching is by USB ID and happens **at boot** — no hotplug, and two identical devices are
-  ambiguous. To pick one of several identical devices, address it by bus/port via `EXTRA_ARGS`:
+(bridge `eth0` + `tap0` inside the container; the guest then DHCPs from your LAN).
 
-  ```yaml
-  EXTRA_ARGS: "-device usb-host,hostbus=1,hostport=4"   # see `lsusb -t` for bus/port
-  ```
-- A **USB-serial adapter** (FTDI / CP210x / CH340 / …) is usually best passed through as USB so the
-  guest loads its own driver and exposes a COM port — see the next section.
+### 3. Multiple NICs
+
+Repeat the pair with distinct ids; derive extra MACs from the stable `VMD_MAC` or hardcode:
+
+```bash
+-netdev user,id=net0,hostfwd=tcp::3389-:3389 -device virtio-net-pci,netdev=net0,mac=${VMD_MAC} \
+-netdev tap,id=net1,ifname=tap0,script=no,downscript=no -device virtio-net-pci,netdev=net1,mac=52:54:00:aa:bb:01
+```
+
+`VMD_MAC` is derived from the disk path, so a guest keeps its MAC (and DHCP lease) across
+restarts.
 
 ---
 
 ## Serial ports
 
-Three approaches, by source:
+### The built-in serial console
 
-### 1. A USB-serial adapter — pass it as USB (recommended)
-
-Let the guest own the adapter and create the COM port with its native driver:
+Wire COM1 to the vmd console socket and the web terminal (`/console`) works:
 
 ```bash
-docker run -d --device=/dev/kvm --device=/dev/bus/usb \
-  -e USB=0403:6001 ...        # e.g. an FTDI adapter
+-serial "unix:${VMD_CONSOLE_SOCK},server,nowait"
 ```
 
-### 2. A real host serial port — `SERIAL` (first-class)
+The Alpine template does this by default (`console=ttyS0`). For Windows it is of limited use; the
+win11 template leaves it out — add it if you want COM1.
 
-`SERIAL` takes a comma list of host TTY paths; each becomes a guest `pci-serial` COM port
-(`ser0`, `ser1`, …). Expose the TTY to the container with `--device=`:
+### Map a serial port to TCP
+
+```bash
+-serial tcp:0.0.0.0:4555,server,nowait      # raw TCP server inside the container
+# telnet flavor: -serial telnet:0.0.0.0:4555,server,nowait
+```
+
+Publish with `-p 127.0.0.1:4555:4555`. Anything connecting to that port talks to the guest's COM port.
+
+### Pass through a host serial device
+
+Map the device into the container, then hand it to QEMU:
 
 ```yaml
-environment:
-  SERIAL: "/dev/ttyUSB0,/dev/ttyS0"
 devices:
-  - /dev/ttyUSB0
-  - /dev/ttyS0               # each TTY must be visible in the container
+  - /dev/kvm
+  - /dev/ttyUSB0            # the physical adapter
 ```
 
 ```bash
-docker run -d --device=/dev/kvm --device=/dev/ttyUSB0 -e SERIAL=/dev/ttyUSB0 ...
+-serial /dev/ttyUSB0
 ```
 
-`pci-serial` is a modern PCIe COM port. For the legacy COM1/COM2 ISA range, or a socket/telnet
-backend, use `EXTRA_ARGS` instead (next).
+### Extra COM ports
 
-### 3. Anything else — `EXTRA_ARGS`
-
-```yaml
-# legacy ISA COM port
-EXTRA_ARGS: "-chardev serial,id=ser0,path=/dev/ttyUSB0 -device isa-serial,chardev=ser0"
-# expose a port over the network (telnet to it); publish 7000 with -p 7000:7000
-EXTRA_ARGS: "-chardev socket,id=ser0,host=0.0.0.0,port=7000,server=on,wait=off -device pci-serial,chardev=ser0"
-```
-
-> `SERIAL` uses ids `ser0`, `ser1`, …; if you also add serial devices via `EXTRA_ARGS`, give them
-> distinct ids to avoid a clash.
+Each `-serial …` adds the next COM port (COM1, COM2, …). `-serial null` skips a slot. For many
+ports use `-device pci-serial` with explicit chardevs.
 
 ---
 
-## The `EXTRA_ARGS` escape hatch
+## USB
 
-`EXTRA_ARGS` is appended verbatim to the QEMU command line (and stored in the per-VM conf), so
-anything QEMU supports that has no dedicated knob can be added here: extra NICs, serial/parallel
-ports, additional disks, PCI passthrough (`vfio-pci`), custom `-device` topology, etc. Always
-remember the matching `docker` flag (`--device=…`, `--cap-add …`, `--device-cgroup-rule=…`) so the
-host resource is reachable inside the container.
+The win11 template already provides a USB controller + tablet:
 
-```yaml
-environment:
-  EXTRA_ARGS: "-drive file=/storage/data.qcow2,if=none,id=d1,format=qcow2 -device virtio-blk-pci,drive=d1"
+```bash
+-device qemu-xhci -device usb-tablet
 ```
 
-> These passthrough recipes are configuration references — exact device paths, IDs and host
-> capabilities vary by machine, so verify on your host.
+### Host USB passthrough
+
+1. Give the container the USB bus (compose):
+
+```yaml
+devices:
+  - /dev/kvm
+  - /dev/bus/usb            # whole bus; or a single /dev/bus/usb/BBB/DDD
+```
+
+2. Attach by vendor/product (survives replug) or by bus/port (fixed physical port):
+
+```bash
+-device usb-host,vendorid=0x046d,productid=0xc52b     # lsusb → ID 046d:c52b
+-device usb-host,hostbus=1,hostport=2
+```
+
+USB3 devices just work through qemu-xhci. For isochronous devices (audio, webcams) results vary —
+prefer bus/port attachment.
+
+### USB storage from an image file
+
+```bash
+-drive file=/vms/win11/usbdisk.img,if=none,id=usb1,format=raw \
+-device usb-storage,drive=usb1
+```
+
+---
+
+## Other devices
+
+- **Display**: templates use `-device "virtio-vga,xres=1920,yres=1080"`. Change the numbers for a
+  different default resolution (the guest can also switch modes once the virtio GPU driver is in).
+- **Extra disks**: add a `-drive file=…,if=none,id=disk1 -device virtio-blk-pci,drive=disk1`
+  pair; create the image in `prepare` (`qemu-img create -f qcow2 {dir}/data.qcow2 100G`).
+- **CD-ROM**: `-drive file=/images/tools.iso,if=none,id=cd1,media=cdrom -device ide-cd,drive=cd1,bus=ahci.2`
+  (the win11 template already has an `ahci` controller).
+- **Audio**: `-audiodev none,id=snd0 -device ich9-intel-hda -device hda-output,audiodev=snd0`
+  (VNC does not carry audio; use RDP for sound on Windows).
+
+After any change: `vmd print` to sanity-check the command, then power-cycle the guest.

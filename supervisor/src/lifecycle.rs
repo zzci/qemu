@@ -45,9 +45,31 @@ pub async fn supervise(
     grace: Duration,
     ctrl: &mut ControlRx,
 ) -> Result<Outcome> {
-    let (qmp, mut events) = Qmp::connect(qmp_path).await?;
+    // Register the signal handlers BEFORE the QMP handshake: a SIGTERM during the connect window
+    // must not hit the default disposition (vmd would die and orphan QEMU without an ACPI stop).
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
+    let (qmp, mut events) = tokio::select! {
+        r = Qmp::connect(qmp_path) => match r {
+            Ok(x) => x,
+            // QEMU is up but uncontrollable (launcher without -qmp?) — kill it rather than exit
+            // and leave an orphan holding the disk while supervisord respawns us.
+            Err(e) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Err(e);
+            }
+        },
+        status = child.wait() => {
+            let status = status?;
+            let code = status.code().unwrap_or_else(|| 128 + signal_of(&status));
+            log::warn(format!("qemu exited before QMP came up (rc={code})"));
+            // Even rc=0 here is a failed boot, not a guest power-off — report a crash.
+            return Ok(Outcome::Crashed(if code == 0 { 1 } else { code }));
+        }
+        _ = sigterm.recv() => return kill_before_qmp(child).await,
+        _ = sigint.recv() => return kill_before_qmp(child).await,
+    };
     let mut kill_deadline: Option<Instant> = None;
     let mut term = false;
     let mut events_open = true;
@@ -164,6 +186,15 @@ pub async fn idle_until_start(ctrl: &mut ControlRx) -> Result<Idle> {
             }
         }
     }
+}
+
+/// Container stop before QMP was reachable: no ACPI path exists yet, so kill QEMU and reap it.
+/// The guest booted seconds ago, so a hard stop is safe in practice.
+async fn kill_before_qmp(mut child: Child) -> Result<Outcome> {
+    log::warn("stop requested before QMP came up — killing QEMU");
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    Ok(Outcome::Terminated)
 }
 
 /// ACPI power off (waking a sleeping guest first); arm the SIGKILL deadline + button re-press.

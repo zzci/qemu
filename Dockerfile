@@ -27,7 +27,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=vmd /src/target/release/vmd /build/bin/vmd
 ADD rootfs /
 COPY supervisor/vmd.toml /etc/vmd/vmd.toml
-RUN chmod -R 0755 /build/bin /build/templates && find /build/config -type f -exec chmod 0644 {} +
+RUN chmod -R 0755 /build/bin /build/templates \
+    && chmod 0644 /build/templates/qemu/common.sh \
+    && find /build/config -type f -exec chmod 0644 {} +
 
 # Single service `vmd`, toggled by ZSRV_vmd=true. Config: /vms/vmd.toml (or VMD_CONFIG), seeded
 # from /etc/vmd/vmd.toml on first run; guest: VMD_OS. Example:

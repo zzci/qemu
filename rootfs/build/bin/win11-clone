@@ -4,12 +4,12 @@
 #   win11-clone <name>           linked clone  (fast, copy-on-write over a sealed golden base)
 #   win11-clone <name> --full    full clone    (independent standalone copy)
 #
-# Each clone gets its own per-disk firmware/TPM/monitor state automatically (derived from the
-# disk path by start-win11), so clones can run as separate containers off the same /storage.
-# log/die come from qemu-common.sh.
+# Each clone derives its own per-disk firmware/TPM state from the disk path, so clones can run
+# as separate guests off the same /vms.
 set -euo pipefail
 LOG_TAG=clone
-source /build/bin/qemu-common.sh
+# shellcheck source=rootfs/build/templates/qemu/common.sh
+source /build/templates/qemu/common.sh
 
 : "${STORAGE:=/vms}"
 : "${DISK:=${VMD_DISK:-$STORAGE/win11/windows.qcow2}}"

@@ -23,21 +23,15 @@ pub struct Sidecars {
 impl Sidecars {
     /// `items`: (substituted command, optional ready-path); `vars` exported as `VMD_<KEY>`.
     pub async fn start(items: &[(String, Option<String>)], vars: &Vars) -> Result<Sidecars> {
-        let env: Vec<(String, String)> = vars
-            .iter()
-            .map(|(k, v)| (format!("VMD_{}", k.to_uppercase()), v.clone()))
-            .collect();
+        let env: Vec<(String, String)> =
+            vars.iter().map(|(k, v)| (format!("VMD_{}", k.to_uppercase()), v.clone())).collect();
         let mut out = Sidecars { items: Vec::new(), env };
         for (cmd, wait_for) in items {
             if cmd.split_whitespace().next().is_none() {
                 continue;
             }
             let child = out.spawn_one(cmd).await?;
-            out.items.push(Sidecar {
-                command: cmd.clone(),
-                wait_for: wait_for.clone(),
-                child,
-            });
+            out.items.push(Sidecar { command: cmd.clone(), wait_for: wait_for.clone(), child });
             if let Some(path) = wait_for {
                 wait_path(path).await.with_context(|| format!("sidecar not ready: {cmd}"))?;
             }

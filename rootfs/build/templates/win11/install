@@ -5,7 +5,8 @@
 # Pipeline: source ISO -> slipstream virtio + autounattend.xml -> repack -> lean install VM.
 set -euo pipefail
 LOG_TAG=install
-source /build/bin/qemu-common.sh
+# shellcheck source=rootfs/build/templates/qemu/common.sh
+source /build/templates/qemu/common.sh
 
 # ----------------------------------------------------------------- config ----
 : "${STORAGE:=/vms}"
@@ -25,8 +26,9 @@ source /build/bin/qemu-common.sh
 : "${LANGUAGE:=en-US}"
 : "${REGION:=$LANGUAGE}"
 : "${KEYBOARD:=$LANGUAGE}"
-: "${VNC_HOST:=127.0.0.1}"         # VNC bind address; localhost = reachable only via the noVNC bridge
-: "${VNC_PASSWORD:=}"             # empty = no VNC auth (watch the install over the noVNC console)
+: "${VNC_SOCK:=${VMD_VNC_SOCK:-}}" # vmd's VNC unix socket: the web console bridge shows the install
+: "${VNC_HOST:=127.0.0.1}"         # TCP fallback bind address when VNC_SOCK is unset (standalone runs)
+: "${VNC_PASSWORD:=}"             # empty = no VNC auth (TCP fallback only; the socket has no password)
 : "${EXTRA_ARGS:=}"
 : "${FORCE:=0}"
 : "${MIN_INSTALL_SECS:=120}"      # a real unattended install never finishes faster than this; a
@@ -41,7 +43,6 @@ UA="Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 STATE="${DISK%.*}"
 VARS="$STATE.OVMF_VARS.fd"
 MONITOR="$STATE.monitor.sock"
-VM_CONF="$STATE.conf"
 INSTALL_STATE="$STATE.install"        # install lifecycle record: installing | installed
 VNC_SECRET="/tmp/$(basename "$STATE").vncpw"   # ephemeral VNC secret file; never written to /storage
 
@@ -63,19 +64,8 @@ locale_code() {
     esac
 }
 
-# Honor CPU/RAM/MACHINE from an existing conf on rebuild (resources only). The installer never
-# writes the conf — start-win11 owns it.
-load_conf() {
-    [ -f "$VM_CONF" ] || return 0
-    local key val
-    while IFS='=' read -r key val; do
-        case "$key" in CPU_CORES|RAM_SIZE|MACHINE) printf -v "$key" '%s' "$val" ;; esac
-    done < "$VM_CONF"
-    return 0
-}
-
 # detect_kvm (-> ACCEL_MODE/CPU_MODEL), setup_firmware (-> CODE/VARS) and build_vnc_args (-> VNC_ARGS)
-# are provided by qemu-common.sh; the install device model builds its ACCEL array from ACCEL_MODE.
+# are provided by templates/qemu/common.sh; the install device model builds its ACCEL array from ACCEL_MODE.
 
 # ------------------------------------------------------------- ISO build ----
 resolve_source_iso() {
@@ -91,6 +81,14 @@ resolve_virtio_iso() {
     VIRTIO_ISO="$STORAGE/virtio-win.iso"
     log "downloading virtio-win drivers -> $VIRTIO_ISO"
     curl -fL -C - -A "$UA" -o "$VIRTIO_ISO" "$VIRTIO_URL" || die "virtio-win download failed"
+    # These drivers are slipstreamed into the install media — verify when a pin is provided.
+    if [ -n "${VIRTIO_SHA256:-}" ]; then
+        echo "$VIRTIO_SHA256  $VIRTIO_ISO" | sha256sum -c - >/dev/null 2>&1 \
+            || die "virtio-win.iso sha256 mismatch (expected $VIRTIO_SHA256)"
+        log "virtio-win.iso sha256 OK"
+    else
+        log "WARN: no VIRTIO_SHA256 pin — downloaded driver ISO is unverified (set virtio_sha256 in [guest.x.install] to enforce)"
+    fi
 }
 
 # Guard against LANGUAGE / IMAGE_INDEX that the source ISO can't satisfy (which would make the
@@ -215,7 +213,6 @@ fi
 
 mkdir -p "$(dirname "$DISK")" "$BUILD_DIR"
 prepare_iso
-load_conf
 [ -f "$DISK" ] || { log "creating disk $DISK ($DISK_SIZE)"; qemu-img create -f qcow2 "$DISK" "$DISK_SIZE" >/dev/null; }
 detect_kvm; ACCEL=(-machine "${MACHINE},accel=$ACCEL_MODE" -cpu "$CPU_MODEL"); setup_firmware; build_vnc_args
 rm -f "$MONITOR"                  # drop a stale monitor socket left by an unclean previous exit

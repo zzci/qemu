@@ -2,241 +2,133 @@
 
 [English](./README.md) · **中文**
 
-一个打包成单个 Docker 镜像(`zzci/qemu`)、可在浏览器里操作的小型 **QEMU/KVM 虚拟化引擎**。引擎与
-**客户机无关**:用 `OS=` 选客户机,`start-vm` 分派到对应启动器。基于
-[`zzci/ubase`](https://hub.docker.com/r/zzci/ubase)(Ubuntu 22.04 + tini + supervisord)。一切 ——
-准备介质、安装、引导、克隆 —— 都在**容器内**完成,由环境变量和一个可编辑的 incus 风格每机配置驱动。
+一个打包成单个 Docker 镜像(`zzci/qemu`)、可在浏览器里操作的小型 **QEMU/KVM 虚拟化引擎**。核心是
+一个静态 Rust 二进制 **`vmd`**,通过 QMP 守护 QEMU,**不含任何针对特定系统的逻辑**——客户机就是纯
+配置:`vmd.toml` 里的一个 `[guest.<name>]` 块加一个模板脚本文件夹。基于
+[`zzci/ubase`](https://hub.docker.com/r/zzci/ubase)(Ubuntu 22.04 + tini + supervisord)。
 
-引擎特性:浏览器控制台(noVNC)· KVM 加速 · 可插拔网络(NAT / bridge / macvlan / host)·
-USB 与串口直通 · 每客户机持久存储 · 免重装克隆。
+特性:内嵌 Web 控制台(noVNC + 串口终端,中英文)· KVM 加速 · 无人值守安装(Windows 11、Alpine)·
+vTPM 2.0 · VNC/串口走 unix socket(除 Web 端口外零 TCP 监听)· 电源 API 与确定性 ACPI 关机 ·
+可选访问密码 · 每客户机独立持久化主目录 + 用户可编辑脚本。
 
-📚 **指南:** [引擎](./docs/common/engine.zh-CN.md) ·
-[网络与设备](./docs/common/networking-and-devices.zh-CN.md) · [docs/](./docs/) ·
+📚 **指南:**[引擎](./docs/common/engine.zh-CN.md) ·
+[网络、串口、USB 与设备](./docs/common/networking-and-devices.zh-CN.md) ·
+[Windows](./docs/guests/windows.zh-CN.md) · [Alpine](./docs/guests/alpine.zh-CN.md) ·
 [贡献 / 新增客户机](./docs/CONTRIBUTING.md)
 
 ---
 
-## 支持的系统
+## 前提
 
-用 `OS=` 选客户机。每个客户机都有自己的指南,讲安装介质、旋钮与注意事项。
+- Docker 可访问宿主机 **`/dev/kvm`**(`--device=/dev/kvm`);否则 QEMU 退回 TCG 纯软件模拟,慢到
+  不可用。
+- 按客户机需要提供安装介质——例如自备的 Windows 11 ISO。Alpine 无需介质,自动拉取官方云镜像
+  (只需网络)。
+- 桥接/tap 网络需要 `--cap-add NET_ADMIN` 和 `--device=/dev/net/tun`。
 
-| `OS=` | 客户机 | 固件 | 安装 | 状态 | 指南 |
-|-------|--------|------|------|------|------|
-| `win11`(默认) | Windows 11 企业版 **LTSC 2024** | UEFI + TPM 2.0 | 无人值守(自备 ISO) | 稳定 | [windows.zh-CN.md](./docs/guests/windows.zh-CN.md) |
-| `alpine` | Alpine Linux | SeaBIOS | noVNC 控制台安装 | 稳定 | [alpine.zh-CN.md](./docs/guests/alpine.zh-CN.md) |
-
-**新增系统:** 在 `rootfs/build/bin/` 放一个 `start-<os>` 脚本,在 `start-vm` 里加一个分支,再加
-`docs/guests/<os>.md` —— 见
-[common/engine.zh-CN.md → 新增客户机](./docs/common/engine.zh-CN.md#新增客户机) 与
-[CONTRIBUTING.md](./docs/CONTRIBUTING.md)。
-
----
-
-## 目录
-
-- [架构](#架构)
-- [前置要求](#前置要求)
-- [快速上手](#快速上手)
-- [配置](#配置)
-- [网络](#网络)
-- [USB 直通](#usb-直通)
-- [日志](#日志)
-- [访问](#访问)
-- [文件布局](#文件布局)
-- [排错](#排错)
-- [说明与限制](#说明与限制)
-
----
-
-## 架构
-
-容器的 `CMD` 是 ubase 的 `/start.sh` → supervisord,运行三个服务:
-
-| 服务 | 脚本 | 职责 |
-|------|------|------|
-| `vm` | `start-vm` | 通用入口:按 `OS` 分派到自包含的每客户机启动器。 |
-| `tpm` | `start-tpm` | 独立的 swtpm vTPM 2.0(供需要的客户机用,如 win11);可用 `sctl` 单独控制。 |
-| `novnc` | `start-novnc` | 把浏览器控制台(8006 端口)桥接到 QEMU 的 VNC。 |
-
-`start-vm` 让引擎与客户机无关(一个镜像,多种客户机);每个客户机在自己的启动器里负责安装+引导。
-深入:[docs/common/engine.zh-CN.md](./docs/common/engine.zh-CN.md)。
-
----
-
-## 前置要求
-
-- 能访问宿主 **`/dev/kvm`** 的 Docker(`--device=/dev/kvm`);否则 QEMU 退回 TCG 软件模拟,装机太慢。
-- **按客户机**准备安装介质 —— 如自备的 Windows 11 LTSC ISO(见该客户机指南)。
-- bridge/macvlan 网络需要:`--cap-add NET_ADMIN` 与 `--device=/dev/net/tun`。
-
----
-
-## 快速上手
-
-默认客户机是 Windows 11(`OS=win11`)。Windows 的完整细节 —— ISO、安装策略、语言、显示 —— 见
-[docs/guests/windows.zh-CN.md](./docs/guests/windows.zh-CN.md)。
+## 快速开始
 
 ```bash
-cd qemu
-mkdir -p images storage
-cp /path/to/Win11_LTSC.iso images/win11.iso       # win11 必需 —— 自备 ISO
-
-docker build -t zzci/qemu .
-
-docker run -d --name win11 --device=/dev/kvm \
-  -e ZSRV_vm=true -e ZSRV_tpm=true -e ZSRV_novnc=true \
-  -e OS=win11 -e WIN11_INSTALL=auto \
-  -p 8006:8006 -p 3389:3389 \
-  --stop-timeout=180 \
-  -v "$PWD/storage:/storage" -v "$PWD/images:/images:ro" \
-  zzci/qemu
-
-docker exec win11 tail -f /var/log/supervisord-vm.log   # 观察安装/引导
-# 然后打开  http://localhost:8006/
+docker run -d --name qemu --device=/dev/kvm \
+  -e ZSRV_vmd=true -e VMD_OS=win11 \
+  -v "$PWD/vms:/vms" -v "$PWD/images:/images:ro" \
+  -p 127.0.0.1:8006:8006 -p 127.0.0.1:3389:3389 zzci/qemu
 ```
 
-> 镜像不烘焙任何默认值,服务**默认关闭**,所以必须显式 `-e ZSRV_vm=true -e ZSRV_tpm=true -e ZSRV_novnc=true`
-> 才会启动。`docker stop` 时引擎会请求客户机 ACPI 关机并等待,记得留足时间(`--stop-timeout=180`,或 compose
-> 的 `stop_grace_period: 3m`)。在客户机内部关机会**保持关机** —— `sctl start vm` 或重启容器再开。
+- 把 Windows ISO 放到 `images/win11.iso`(`images/virtio-win.iso` 可选,缺省自动下载)。首次启动
+  全自动安装(KVM 下约 13 分钟),装完直接引导系统。打开 **http://localhost:8006** 观看与控制。
+- 换 `VMD_OS=alpine` 则启动 Alpine——无需介质,安装脚本自动获取官方云镜像。
 
-其它客户机设 `OS=` 并照该客户机指南操作(如 [Alpine](./docs/guests/alpine.zh-CN.md))。仓库附带的
-`docker-compose.yml` 含一个 Windows 服务和一段注释掉的 Alpine 示例。
+也可以用 [docker-compose.yml](./docker-compose.yml)。
 
----
+## 安全
+
+默认值面向单机实验环境,对外暴露前请先检查:
+
+- **未开启鉴权前保持只绑定 localhost(即上面的默认写法)。** 不设置 `[web] password` 时,任何能访问
+  8006 端口的人都拥有完整的 VNC 与电源控制;示例的 guest 账号(`docker`/`admin`)是公开的——请修改,
+  并让 3389 仅限本机或置于防火墙之后。
+- **远程访问请加 TLS。** vmd 只提供明文 HTTP;请置于 HTTPS 反向代理之后(带
+  `X-Forwarded-Proto: https` 时登录 cookie 自动加 `Secure`)。密码连续错误会被逐步延迟,但传输
+  加密由代理负责。
+- **固定下载校验值。** Alpine 安装会用镜像站的 `.sha512`(或 install 配置里的 `sha512 = "…"`)校验云镜像;
+  Windows 安装只有设置 `virtio_sha256 = "…"` 时才校验自动下载的 `virtio-win.iso`。
 
 ## 配置
 
-以下**引擎**旋钮对任何客户机通用,在 `docker run -e ...` 或 compose `environment:` 中设置:
+一切都在 **`vmd.toml`**。查找顺序:`$VMD_CONFIG` → `/vms/vmd.toml` → `/etc/vmd/vmd.toml`
+(镜像内置默认,首次运行自动复制到 `/vms/vmd.toml` 供编辑)。用 `VMD_OS` 或文件里的 `default`
+选择客户机。
 
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `OS` | `win11` | 客户机选择 —— 见[支持的系统](#支持的系统) |
-| `RAM_SIZE` | `4G` | 内存 |
-| `CPU_CORES` | `2` | 虚拟 CPU 数 |
-| `DISK_SIZE` | `128G` | 系统盘大小(仅首装) |
-| `NETWORK` | `user` | `user` \| `bridge` \| `macvlan` \| `host` \| `none` |
-| `BRIDGE` / `MACVLAN` | – | 这些模式用的网桥名 / 容器网卡 |
-| `PORT_FWD` | 按客户机 | `user` 模式宿主→客户机转发,`host-guest` 对(如 `3389-3389,8080-80`) |
-| `VGA` | `std` | 显示适配器:`std` \| `virtio` \| `qxl` |
-| `RESOLUTION` | – | 强制分辨率,如 `1920x1080`(EDID) |
-| `VNC_HOST` | `127.0.0.1` | VNC 监听地址。localhost = 仅经 noVNC 桥接访问;设 `0.0.0.0` 可直接暴露 VNC(如 `--network host` 下) |
-| `VNC_PASSWORD` | – | VNC 密码(空 = 无认证)。VNC 协议会截断为前 8 个字符 |
-| `USB` | – | USB 直通,`vendor:product` 十六进制(逗号列表) |
-| `SERIAL` | – | 宿主串口 → guest COM,TTY 路径(如 `/dev/ttyUSB0`),逗号列表 |
-| `CONSOLE` | `off` | `on` 暴露客户机文本控制台(ttyS0/COM1)供 `vm-console` 连接 —— 对 Linux 很有用 |
-| `EXTRA_ARGS` | – | 额外原始 QEMU 参数(socket 串口、额外网卡/磁盘、vfio-pci……) |
-| `DISK` | `/storage/<os>/…qcow2` | 引导盘路径(指向克隆) |
-| `NAME` / `UUID` | `windows` / 自动 | QEMU `-name` / 系统 `-uuid`(UUID 首次生成并存入 conf) |
-| `ZSRV_vm` | 关 | 设 `true` 引导客户机;仅构建则留空(再 `win11-installer`) |
-| `ZSRV_tpm` | 关 | 设 `true` 运行 vTPM(`tpm` 服务)—— Windows 11 必需 |
-| `ZSRV_novnc` | 关 | 设 `true` 运行浏览器控制台桥 |
+```toml
+default = "win11"
 
-**客户机专属旋钮**(账号、语言、安装策略、端口转发……)在各客户机指南里:
-[Windows 11](./docs/guests/windows.zh-CN.md)、[Alpine](./docs/guests/alpine.zh-CN.md)。首次引导时所选
-设置会写入 `storage/<os>/` 下可编辑的每机配置 —— 见
-[common/engine.zh-CN.md](./docs/common/engine.zh-CN.md)。
+[web]
+port = 8006
+# password = "change-me"        # Web 控制台访问密码(留空/缺省 = 不鉴权)
 
----
+[guest.win11]
+dir       = "/vms/win11"        # 客户机主目录:磁盘、状态、日志、scripts/ 都在这里
+disk      = "windows.qcow2"     # 相对 dir
+disk_size = "128G"
+ram       = "4G"
+cpus      = 2
+launch    = "win11"             # 模板文件夹,首启复制到 {dir}/scripts/(编辑副本即可定制)
+tpm       = true                # 内置 vTPM 2.0(受管 swtpm)
+seed      = [ { template = "/usr/share/OVMF/OVMF_VARS_4M.fd", to = "{state}.OVMF_VARS.fd" } ]
 
-## 网络
+[guest.win11.install]           # 首启安装,由 policy 把关
+policy      = "auto"            # auto | force | none
+source_iso  = "/images/win11.iso"
+username    = "docker"
+password    = "admin"
+language    = "zh-CN"           # UI 语言,须存在于 ISO 中(自动校验回退)
+image_index = 1
+```
 
-用 `NETWORK` 选模式;每块网卡在系统里是一个适配器。完整指南(含 USB 与串口直通):
-[docs/common/networking-and-devices.zh-CN.md](./docs/common/networking-and-devices.zh-CN.md)。
+install 里的每个键都会**大写后作为环境变量**传给安装脚本;磁盘与大小从父级以
+`VMD_DISK`/`VMD_DISK_SIZE` 传入。详见 [docs/common/engine.zh-CN.md](./docs/common/engine.zh-CN.md)。
 
-| 模式 | 行为 | 要求 |
-|------|------|------|
-| `user` | SLIRP NAT + 端口转发(默认) | 无 |
-| `bridge` | 在已有网桥 `$BRIDGE` 上建 tap,加入该二层 | `NET_ADMIN`、`/dev/net/tun`、网桥已存在 |
-| `host` | 同 bridge,用于 `--network host` | 同 bridge |
-| `macvlan` | 在 `$MACVLAN` 上建 macvtap,guest 获得自己的局域网 IP | `NET_ADMIN`、`--device-cgroup-rule='c *:* rwm'`、一个 macvlan 网络 |
-| `none` | 无网卡 | – |
+## Web 控制台
+
+一个端口(8006)提供全部功能:首页(实时状态、VM 信息、端口转发)、开机/关机/重启/强制关闭、
+noVNC 显示、xterm 串口终端,以及 JSON API(`/status`、`/info`、
+`POST /power/<start|shutdown|reset|poweroff>`)。界面中英文可切换。设置 `[web] password` 后需先
+登录。
+
+容器内命令行:
 
 ```bash
-docker network create -d macvlan \
-  --subnet=192.168.1.0/24 --gateway=192.168.1.1 -o parent=enp1s0 lan
-docker run -d --name win11 --network lan --device=/dev/kvm --device=/dev/net/tun \
-  --cap-add NET_ADMIN --device-cgroup-rule='c *:* rwm' \
-  -e NETWORK=macvlan -e MACVLAN=eth0 -v "$PWD/storage:/storage" zzci/qemu
+vmd power status|start|shutdown|reset|poweroff
+vmd print          # 干跑:显示解析后的计划与 QEMU 命令
 ```
 
-> macvlan 注意:**宿主**无法直接访问 macvlan guest IP(同局域网其它机器可以)。
+## 定制客户机
 
----
+首次启动时模板脚本被复制到 `{dir}/scripts/`(如 `vms/win11/scripts/launcher`、`.../install`)。
+**直接编辑这些副本**——它们属于你,永不被覆盖。launcher 用 `VMD_*` 环境变量拼装 QEMU 命令;改
+分辨率、加磁盘、网卡、串口、USB 都在这里。参见
+[网络与设备](./docs/common/networking-and-devices.zh-CN.md)。
 
-## USB 直通
-
-按 `vendor:product`(十六进制)直通宿主 USB 设备,逗号分隔。细节(含串口)见
-[docs/common/networking-and-devices.zh-CN.md](./docs/common/networking-and-devices.zh-CN.md)。
-
-```bash
-docker run -d --name win11 --device=/dev/kvm --device=/dev/bus/usb \
-  -e USB=0bda:8153 -v "$PWD/storage:/storage" zzci/qemu
-```
-
-宿主 USB 设备必须在容器内可见(`--device=/dev/bus/usb`,或 privileged)。
-
----
-
-## 日志
-
-supervisord 把各服务日志写在**容器内**(不在 `/storage` 卷上):
+## 文件布局(每客户机,位于 `dir` 下)
 
 ```
-/var/log/supervisord-vm.log      # QEMU / 安装 / 引导
-/var/log/supervisord-tpm.log     # vTPM
-/var/log/supervisord-novnc.log   # 控制台桥
+vms/win11/
+├── windows.qcow2            # 磁盘
+├── windows.OVMF_VARS.fd     # UEFI NVRAM
+├── windows.tpm/             # vTPM 状态
+├── windows.{qmp,vnc,console}.sock
+├── windows.install(ed)      # 安装标记
+├── windows.uuid             # 稳定的 SMBIOS UUID
+├── qemu.log                 # QEMU 自身输出
+└── scripts/                 # 可编辑的 launcher + install
 ```
 
-```bash
-docker exec <container> tail -f /var/log/supervisord-vm.log
-```
+## 排障
 
----
-
-## 访问
-
-- **图形控制台**:`http://localhost:8006/` —— 完整鼠标键盘的 noVNC。
-- **文本控制台**(串口,Linux 很好用):用 `CONSOLE=on` 启动,然后接一个终端 ——
-  `docker exec -it <container> vm-console`(Ctrl-] 断开)。Linux 客户机需 `console=ttyS0` 才会在此显示登录/启动。
-- **远程**:按客户机 —— Windows RDP(客户机 `3389`)、Alpine SSH(客户机 `22`)。`user` 模式下宿主↔客户机映射由 `PORT_FWD` 决定(默认 `3389-3389` / `2222-22`)。
-
----
-
-## 文件布局
-
-```
-qemu/
-├── Dockerfile                 # FROM zzci/ubase + qemu/ovmf/swtpm/novnc + 工具
-├── docker-compose.yml         # 项目名 "qemu"(windows 服务 + 注释掉的 alpine 示例)
-├── README.md / README.zh-CN.md
-├── docs/                      # 双语指南(每份 EN + .zh-CN)+ CONTRIBUTING.md
-│   ├── common/                # 系统无关:engine.md、networking-and-devices.md
-│   └── guests/                # 每系统:windows.md、alpine.md、_template.md
-├── images/                    # 本地安装 ISO —— 已 gitignore
-├── storage/                   # 持久状态,每客户机一个目录(日志在 /var/log)
-│   ├── win11/                 # windows.qcow2、*.conf / *.qemu.conf / *.install、OVMF_VARS、*.tpm/、clones/
-│   └── alpine/                # alpine.qcow2(OS=alpine 时)
-└── rootfs/build/{bin,services,config}   # 打进镜像
-```
-
----
-
-## 排错
-
-| 现象 | 原因 / 处理 |
-|------|-------------|
-| 裸 `docker run` 什么都不启动 | 服务默认关闭 —— 加 `-e ZSRV_vm=true -e ZSRV_tpm=true -e ZSRV_novnc=true`。 |
-| `sctl list` 里 `vm` 服务反复重启 | 看 `/var/log/supervisord-vm.log`;多为某个 QEMU 参数或上一个容器遗留的 qcow2 锁。 |
-| 黑屏 / `/dev/kvm` 告警 | 没带 `--device=/dev/kvm` → TCG;加上该设备。 |
-| `macvtap … Operation not permitted` | 加 `--device-cgroup-rule='c *:* rwm'`(及 `--cap-add NET_ADMIN`)。 |
-| `NETWORK=bridge needs BRIDGE=…` | 设 `BRIDGE` 为已有网桥并加 `--device=/dev/net/tun`。 |
-
-客户机专属问题(安装循环、语言、显示)在各客户机指南里。
-
----
-
-## 说明与限制
-
-- 系统在挂载的 `storage/<os>/…qcow2` 里,不在镜像中(镜像约 750 MB)。
-- 安装介质按客户机准备,授权要求的需自备(如 Windows ISO 从不自动下载)。
-- 仅供虚拟化/实验用途;请遵守各系统授权条款。
+- **很慢 / 日志有 TCG 警告** —— 容器内没有可用的 `/dev/kvm`。
+- **安装像卡住了** —— 用 Web 控制台实时观看;装完安装 VM 会自动关机。
+  `vms/<g>/<disk>.install` 记录 `installing`/`installed`。
+- **重装** —— `policy = "force"`(一次性抹盘),或删除磁盘与标记文件。
+- **日志** —— `docker exec <c> tail -f /var/log/supervisord-vmd.log`;QEMU 自身 stderr 在
+  `{dir}/qemu.log`。
