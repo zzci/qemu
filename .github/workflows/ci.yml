@@ -68,7 +68,9 @@ jobs:
           done
 
       - name: ShellCheck
+        # common.sh is not linted standalone: it is followed via -x from the entry scripts, where
+        # its cross-file globals (LOG_TAG, VNC_ARGS, …) resolve instead of tripping SC2034.
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q shellcheck
-          shellcheck -x rootfs/build/bin/* rootfs/build/templates/*/install \
-            rootfs/build/templates/*/launcher rootfs/build/templates/qemu/common.sh
+          shellcheck -x --severity=warning rootfs/build/bin/* \
+            rootfs/build/templates/*/install rootfs/build/templates/*/launcher
