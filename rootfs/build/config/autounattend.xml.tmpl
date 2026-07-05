@@ -61,7 +61,12 @@
         <AcceptEula>true</AcceptEula>
         <FullName>@USERNAME@</FullName>
         <Organization>Docker</Organization>
-        <ProductKey><WillShowUI>OnError</WillShowUI></ProductKey>
+        <!-- Empty key + Never: setup must not stop at the key prompt (activate later in-guest);
+             pairs with the ei.cfg the install script drops into sources/. -->
+        <ProductKey>
+          <Key></Key>
+          <WillShowUI>Never</WillShowUI>
+        </ProductKey>
       </UserData>
     </component>
   </settings>

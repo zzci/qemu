@@ -170,6 +170,14 @@ prepare_iso() {
 
     log "autounattend: user=$USERNAME lang=$(locale_code "$LANGUAGE") region=$(locale_code "$REGION") kbd=$(locale_code "$KEYBOARD") index=$IMAGE_INDEX"
     render_autounattend "$work/autounattend.xml"
+    # ei.cfg: keyless retail setup — with the empty <ProductKey> in the unattend, setup can
+    # never stop at an edition/key prompt (activation happens later inside the guest).
+    cat > "$work/sources/ei.cfg" <<'EOF'
+[Channel]
+_Default
+[VL]
+0
+EOF
 
     log "injecting virtio drivers (\$WinpeDriver\$) ..."
     local drv="$work/\$WinpeDriver\$"; mkdir -p "$drv"; local d
