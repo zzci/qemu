@@ -361,6 +361,7 @@ body {
 /* ---- console view (VNC / serial) -------------------------------------- */
 
 .console {
+  --toolbar-h: 52px; /* fixed strip reserved for the toolbar; the canvas never extends under it */
   height: 100vh;
   width: 100vw;
   background: #000;
@@ -368,17 +369,19 @@ body {
   overflow: hidden;
 }
 
-/* Floating overlay: it sits above the canvas and slides out of view when hidden, so toggling it
-   never changes the console's size (the canvas stays put — no jump). */
+/* The toolbar lives in a fixed-height strip above the canvas. It still slides away when hidden,
+   but the strip stays reserved, so the canvas size is constant (no jump) and nothing is covered:
+   noVNC and xterm render fully between the strip and the viewport bottom. */
 .toolbar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
+  height: var(--toolbar-h);
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 10px 16px;
+  padding: 0 16px;
   background: linear-gradient(180deg, rgba(18, 23, 31, 0.92), rgba(13, 18, 25, 0.82));
   border-bottom: 1px solid rgba(255, 255, 255, 0.09);
   backdrop-filter: blur(8px);
@@ -447,10 +450,11 @@ body {
   color: #7d8794;
 }
 
-/* The panel fills the whole console; the toolbar floats over it, so its size is fixed. */
+/* The panel fills the console below the reserved toolbar strip, so the full noVNC screen and
+   every xterm row are visible regardless of the toolbar's visibility. */
 .vnc-surface {
   position: absolute;
-  inset: 0;
+  inset: var(--toolbar-h) 0 0 0;
   display: flex;
   background: #000;
 }
@@ -459,7 +463,7 @@ body {
 }
 .term-surface {
   position: absolute;
-  inset: 0;
+  inset: var(--toolbar-h) 0 0 0;
   padding: 8px 10px;
   background: #000;
 }
