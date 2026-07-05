@@ -31,16 +31,28 @@ export default function ConsolePanel({ onState }: ConsolePanelProps) {
     ws.binaryType = 'arraybuffer'
     const dec = new TextDecoder()
     const enc = new TextEncoder()
+    // The serial console does not replay past output — a freshly opened page shows only the
+    // cursor. If nothing arrives shortly after connect, send one Enter so the guest's getty
+    // reprints its login prompt.
+    let sawData = false
+    const wakeTimer = window.setTimeout(() => {
+      if (!sawData && ws.readyState === WebSocket.OPEN) {
+        ws.send(enc.encode('\r'))
+      }
+    }, 300)
     ws.onopen = () => onState('connected')
     ws.onclose = () => onState('closed')
-    ws.onmessage = (e) =>
+    ws.onmessage = (e) => {
+      sawData = true
       term.write(typeof e.data === 'string' ? e.data : dec.decode(new Uint8Array(e.data)))
+    }
     term.onData((d) => ws.readyState === WebSocket.OPEN && ws.send(enc.encode(d)))
 
     // Re-fit on any container size change (window resize or toolbar show/hide).
     const ro = new ResizeObserver(() => fit.fit())
     ro.observe(surface.current)
     return () => {
+      window.clearTimeout(wakeTimer)
       ro.disconnect()
       try {
         ws.close()
