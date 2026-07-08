@@ -59,7 +59,7 @@ install 的键会大写后作为环境变量传给 `{dir}/scripts/install`;`lang
 ## 访问
 
 - **Web 控制台** —— `http://<host>:8006`(noVNC 显示 + 电源控制)。
-- **RDP** —— launcher 转发 3389,unattend 已启用(`docker run -p 127.0.0.1:3389:3389`,用
+- **RDP** —— launcher 转发 3389,unattend 已启用(guest 防火墙已整体关闭——开发/实验用镜像)(`docker run -p 127.0.0.1:3389:3389`,用
   `username`/`password` 登录)。
 
 ## 克隆

@@ -62,7 +62,8 @@ Signals while installing: watch it live on the web console; the qcow2 grows; the
 ## Access
 
 - **Web console** — `http://<host>:8006` (noVNC display + power controls).
-- **RDP** — port 3389 is forwarded by the launcher and enabled by the unattend
+- **RDP** — port 3389 is forwarded by the launcher and enabled by the unattend (the guest firewall
+  is disabled entirely — this is a dev/lab image)
   (`docker run -p 127.0.0.1:3389:3389`, log in as `username`/`password`).
 
 ## Cloning
