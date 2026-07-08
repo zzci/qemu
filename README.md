@@ -10,8 +10,8 @@ QMP; it contains **no per-OS logic**. Guests are pure configuration: a `[guest.<
 
 Features: embedded web console (noVNC + serial terminal, English/中文) · KVM acceleration ·
 unattended installs (Windows 11, Alpine) · vTPM 2.0 · VNC & serial over unix sockets (no open TCP
-except the web port) · power API with deterministic ACPI shutdown · optional access password ·
-per-guest persistent home with user-editable scripts.
+except the web port) · power API with deterministic ACPI shutdown · save/resume VM state to disk ·
+optional access password · per-guest persistent home with user-editable scripts.
 
 📚 **Guides:** [engine](./docs/common/engine.md) ·
 [networking, serial, USB & devices](./docs/common/networking-and-devices.md) ·

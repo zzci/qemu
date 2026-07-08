@@ -140,6 +140,9 @@ export default function App() {
             <button className="btn-power p-neutral" onClick={() => act('reset', t('confirmRestart'))}>
               <span className="emoji">⟳</span> {t('restart')}
             </button>
+            <button className="btn-power p-neutral" onClick={() => act('save', t('confirmSave'))}>
+              <span className="emoji">💾</span> {t('saveState')}
+            </button>
             <button className="btn-power p-danger" onClick={() => act('poweroff', t('confirmForceOff'))}>
               <span className="emoji">⚠</span> {t('forceOff')}
             </button>

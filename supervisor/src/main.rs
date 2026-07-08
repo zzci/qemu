@@ -136,6 +136,7 @@ async fn run() -> Result<()> {
     phase.write().unwrap().clear(); // live status now comes from the supervisor
 
     // ---- boot / supervise / (idle & restart) loop ----
+    let saved_marker = PathBuf::from(format!("{stem}.saved"));
     loop {
         sidecars.ensure().await?; // respawn any that died with the last VM (swtpm does)
         let _ = tokio::fs::remove_file(&qmp_sock).await; // drop a stale socket
@@ -155,7 +156,7 @@ async fn run() -> Result<()> {
         }
         let child = command.spawn().with_context(|| format!("spawn {prog}"))?;
 
-        match lifecycle::supervise(child, &qmp_sock, cfg.stop_grace, &mut ctrl_rx).await? {
+        match lifecycle::supervise(child, &qmp_sock, cfg.stop_grace, &mut ctrl_rx, &saved_marker).await? {
             lifecycle::Outcome::Terminated => {
                 sidecars.stop();
                 std::process::exit(0);
@@ -164,9 +165,14 @@ async fn run() -> Result<()> {
                 sidecars.stop();
                 std::process::exit(code);
             }
-            lifecycle::Outcome::PoweredOff => {
-                log::info("guest powered off — console still up; POST /power/start to boot again");
-                match lifecycle::idle_until_start(&mut ctrl_rx).await? {
+            outcome @ (lifecycle::Outcome::PoweredOff | lifecycle::Outcome::Saved) => {
+                let saved = matches!(outcome, lifecycle::Outcome::Saved);
+                log::info(if saved {
+                    "state saved to disk — container may stop; POST /power/start resumes it"
+                } else {
+                    "guest powered off — console still up; POST /power/start to boot again"
+                });
+                match lifecycle::idle_until_start(&mut ctrl_rx, saved).await? {
                     lifecycle::Idle::Terminated => {
                         sidecars.stop();
                         std::process::exit(0);
@@ -183,9 +189,9 @@ async fn power(args: &[String]) -> Result<()> {
     let cfg = Config::load()?;
     let action = args.first().map(String::as_str).unwrap_or("status");
     let (method, path) = match action {
-        "start" | "shutdown" | "reset" | "poweroff" => ("POST", format!("/power/{action}")),
+        "start" | "shutdown" | "reset" | "poweroff" | "save" => ("POST", format!("/power/{action}")),
         "status" => ("GET", "/status".to_string()),
-        other => bail!("unknown action '{other}' (start|shutdown|reset|poweroff|status)"),
+        other => bail!("unknown action '{other}' (start|shutdown|reset|poweroff|save|status)"),
     };
     let body = http_local(cfg.web_port, method, &path, &cfg.web_password).await?;
     log::info(format!("{action}: {body}"));
@@ -426,5 +432,5 @@ async fn run_prepare(cmd: &str) -> Result<()> {
 }
 
 fn print_help() {
-    println!("vmd — generic QEMU VM supervisor\n\nUSAGE:\n  vmd run              prepare + boot the active guest (per vmd.toml)\n  vmd print            show the resolved plan + QEMU command (dry run)\n  vmd power <action>   shutdown | reset | poweroff | status\n");
+    println!("vmd — generic QEMU VM supervisor\n\nUSAGE:\n  vmd run              prepare + boot the active guest (per vmd.toml)\n  vmd print            show the resolved plan + QEMU command (dry run)\n  vmd power <action>   start | shutdown | reset | poweroff | save | status\n");
 }

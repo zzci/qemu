@@ -9,7 +9,7 @@
 
 特性:内嵌 Web 控制台(noVNC + 串口终端,中英文)· KVM 加速 · 无人值守安装(Windows 11、Alpine)·
 vTPM 2.0 · VNC/串口走 unix socket(除 Web 端口外零 TCP 监听)· 电源 API 与确定性 ACPI 关机 ·
-可选访问密码 · 每客户机独立持久化主目录 + 用户可编辑脚本。
+虚拟机状态存盘/恢复 · 可选访问密码 · 每客户机独立持久化主目录 + 用户可编辑脚本。
 
 📚 **指南:**[引擎](./docs/common/engine.zh-CN.md) ·
 [网络、串口、USB 与设备](./docs/common/networking-and-devices.zh-CN.md) ·

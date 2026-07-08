@@ -1,6 +1,6 @@
 // vmd HTTP/WS endpoints (same origin as this page in production).
 
-export type PowerAction = 'start' | 'shutdown' | 'reset' | 'poweroff'
+export type PowerAction = 'start' | 'shutdown' | 'reset' | 'poweroff' | 'save'
 
 export async function power(action: PowerAction): Promise<string> {
   const r = await fetch(`/power/${action}`, { method: 'POST' })

@@ -324,7 +324,10 @@ async fn power(
         "shutdown" => Control::Shutdown,
         "reset" => Control::Reset,
         "poweroff" => Control::PowerOff,
-        _ => return (StatusCode::BAD_REQUEST, "action: start|shutdown|reset|poweroff\n").into_response(),
+        "save" => Control::Save,
+        _ => {
+            return (StatusCode::BAD_REQUEST, "action: start|shutdown|reset|poweroff|save\n").into_response()
+        }
     };
     match s.ctrl.send(cmd).await {
         Ok(()) => (StatusCode::OK, format!("{action}\n")).into_response(),

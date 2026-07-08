@@ -21,9 +21,15 @@ pub enum Control {
     Reset,
     /// Hard power-off — quit QEMU immediately, no ACPI.
     PowerOff,
+    /// Save RAM+device+disk state to a qcow2 snapshot, then stop QEMU (resumed on next Start).
+    Save,
     /// Query run state; reply on the channel.
     Status(oneshot::Sender<String>),
 }
+
+/// The qcow2 internal-snapshot tag used by save/resume (managedsave semantics: one slot,
+/// consumed on resume).
+pub const SAVE_TAG: &str = "vmd-save";
 
 pub type ControlTx = mpsc::Sender<Control>;
 pub type ControlRx = mpsc::Receiver<Control>;
@@ -32,18 +38,23 @@ pub type ControlRx = mpsc::Receiver<Control>;
 pub enum Outcome {
     /// Clean guest power-off — stay off (web up) until a `Start`.
     PoweredOff,
+    /// State saved to disk — stay off (web up); the next `Start` resumes from the snapshot.
+    Saved,
     /// Container/operator stop (SIGTERM/SIGINT) — exit 0.
     Terminated,
     /// QEMU crashed — exit with its code so supervisord restarts vmd.
     Crashed(i32),
 }
 
-/// Supervise a freshly-spawned QEMU until it exits.
+/// Supervise a freshly-spawned QEMU until it exits. When `saved_marker` exists, the guest is
+/// reverted to the saved snapshot right after QMP comes up (the marker is consumed either way,
+/// so a broken snapshot cannot cause a resume loop).
 pub async fn supervise(
     mut child: Child,
     qmp_path: &Path,
     grace: Duration,
     ctrl: &mut ControlRx,
+    saved_marker: &Path,
 ) -> Result<Outcome> {
     // Register the signal handlers BEFORE the QMP handshake: a SIGTERM during the connect window
     // must not hit the default disposition (vmd would die and orphan QEMU without an ACPI stop).
@@ -70,8 +81,24 @@ pub async fn supervise(
         _ = sigterm.recv() => return kill_before_qmp(child).await,
         _ = sigint.recv() => return kill_before_qmp(child).await,
     };
+
+    // Resume from a saved snapshot before the guest gets anywhere with a cold boot (QMP comes up
+    // while the firmware is still initializing; loadvm reverts disk+RAM to the snapshot anyway).
+    if saved_marker.exists() {
+        log::info(format!("resuming saved state (loadvm {SAVE_TAG})…"));
+        match qmp.loadvm(SAVE_TAG).await {
+            Ok(()) => {
+                qmp.delvm(SAVE_TAG).await; // one-shot slot: reclaim the snapshot space
+                log::info("state restored");
+            }
+            Err(e) => log::warn(format!("resume failed ({e:#}) — continuing with a cold boot")),
+        }
+        let _ = std::fs::remove_file(saved_marker);
+    }
+
     let mut kill_deadline: Option<Instant> = None;
     let mut term = false;
+    let mut saved = false;
     let mut events_open = true;
     let mut wake_retried = false;
     // Re-press the power button while shutdown is pending: Windows drops the event if the logon
@@ -109,6 +136,23 @@ pub async fn supervise(
                     Some(Control::Shutdown) => begin_powerdown(&qmp, grace, &mut kill_deadline, &mut next_press).await,
                     Some(Control::Reset)    => { log::info("hard reset (system_reset)"); let _ = qmp.reset().await; }
                     Some(Control::PowerOff) => { log::info("hard power-off (quit)"); let _ = qmp.quit().await; }
+                    Some(Control::Save)     => {
+                        // savevm blocks QMP (and this loop) for roughly RAM-size time; status
+                        // queries queue up meanwhile, which is acceptable for a rare operation.
+                        log::info(format!("saving VM state (savevm {SAVE_TAG}) — takes a moment per GB of RAM…"));
+                        match qmp.savevm(SAVE_TAG).await {
+                            Ok(()) => match std::fs::write(saved_marker, format!("{SAVE_TAG}\n")) {
+                                Ok(()) => {
+                                    saved = true;
+                                    log::info("state saved — stopping QEMU (POST /power/start resumes)");
+                                    let _ = qmp.quit().await;
+                                }
+                                // no marker = no resume; keep running rather than lose the session
+                                Err(e) => log::warn(format!("cannot record save marker {}: {e} — VM keeps running", saved_marker.display())),
+                            },
+                            Err(e) => log::warn(format!("save failed: {e:#} — VM keeps running")),
+                        }
+                    }
                     Some(Control::Start)    => { /* already running */ }
                     Some(Control::Status(reply)) => {
                         let s = qmp.status().await.unwrap_or_else(|_| "unknown".into());
@@ -154,6 +198,8 @@ pub async fn supervise(
     Ok(if term {
         log::info(format!("container stopping (qemu rc={code})"));
         Outcome::Terminated
+    } else if saved && code == 0 {
+        Outcome::Saved
     } else if code == 0 {
         Outcome::PoweredOff
     } else {
@@ -170,18 +216,20 @@ pub enum Idle {
     Terminated,
 }
 
-/// VM off: keep the web console responsive until `Start` or container stop.
-pub async fn idle_until_start(ctrl: &mut ControlRx) -> Result<Idle> {
+/// VM off: keep the web console responsive until `Start` or container stop. `saved` switches the
+/// reported status so the UI can tell "saved (start resumes)" from a plain power-off.
+pub async fn idle_until_start(ctrl: &mut ControlRx, saved: bool) -> Result<Idle> {
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
+    let status = if saved { "saved" } else { "off" };
     loop {
         tokio::select! {
             _ = sigterm.recv() => return Ok(Idle::Terminated),
             _ = sigint.recv() => return Ok(Idle::Terminated),
             cmd = ctrl.recv() => match cmd {
                 Some(Control::Start) => return Ok(Idle::Start),
-                Some(Control::Status(reply)) => { let _ = reply.send("off".into()); }
-                Some(_) => {} // shutdown/reset/poweroff while already off: ignore
+                Some(Control::Status(reply)) => { let _ = reply.send(status.into()); }
+                Some(_) => {} // shutdown/reset/poweroff/save while already off: ignore
                 None => return Ok(Idle::Terminated),
             }
         }

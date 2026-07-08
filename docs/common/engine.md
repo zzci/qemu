@@ -86,10 +86,15 @@ Every other key in the table becomes an **UPPERCASE env var** for the script (`s
   after `stop_grace_secs` (default 150) as the last resort.
 - A clean guest power-off does **not** end the container: the web console stays up and
   `POST /power/start` boots the VM again.
+- `POST /power/save` freezes the VM and stores RAM + devices + disk into a qcow2 internal
+  snapshot (`savevm`), then stops QEMU — `/status` shows `saved` and the container may stop.
+  The next `start` (even after a container restart) resumes from that exact moment and consumes
+  the snapshot. Every writable disk must be qcow2; the win11 template converts its UEFI NVRAM
+  to qcow2 automatically on first boot.
 - `reset` = hard reset, `poweroff` = immediate QEMU quit.
 - QEMU exit ≠ 0 → vmd exits with that code and supervisord restarts it.
 
-CLI (inside the container): `vmd power status|start|shutdown|reset|poweroff`, `vmd print`.
+CLI (inside the container): `vmd power status|start|shutdown|reset|poweroff|save`, `vmd print`.
 
 ## Web endpoints
 
