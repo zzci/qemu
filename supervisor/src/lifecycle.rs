@@ -80,11 +80,23 @@ pub async fn supervise(
         _ = sigint.recv() => return kill_before_qmp(child).await,
     };
 
-    // Resuming: QEMU's `-incoming exec:cat …` already holds the file open and auto-continues the
-    // guest when the stream ends; unlink it now so the slot is consumed exactly once.
+    // Resuming: QEMU's `-incoming exec:cat …` already holds the file open; unlink it now so the
+    // slot is consumed exactly once. The migrated runstate is `paused` (save stops the vCPUs
+    // before streaming), so once the stream finishes the guest must be kicked with `cont`.
     if resuming {
         log::info("restoring saved state (incoming migration)…");
         let _ = std::fs::remove_file(vmstate);
+        for _ in 0..1200 {
+            match qmp.status().await.as_deref() {
+                Ok("inmigrate") => tokio::time::sleep(Duration::from_millis(500)).await,
+                Ok("paused") => {
+                    let _ = qmp.cont().await;
+                    log::info("state restored — guest running");
+                    break;
+                }
+                _ => break, // already running, or QEMU went away (crash path handles it)
+            }
+        }
     }
 
     let mut kill_deadline: Option<Instant> = None;

@@ -35,8 +35,8 @@ policy = "auto"
 - **SSH** —— 模板转发宿主 2222 → 客户机 22(`docker run -p 127.0.0.1:2222:2222`);需先在
   客户机内启用 sshd。
 
-云镜像使用 tiny-cloud:无数据源首次启动时,串口上 `root` 无密码可登录(请立即设置密码;也可
-通过额外光驱挂 nocloud seed ISO 走 cloud-init 初始化)。
+云镜像使用 tiny-cloud,和所有云镜像一样 `root` 账号是**锁定的**——串口登录会被拒绝。请通过
+cloud-init 用户数据初始化访问(额外光驱挂 NoCloud seed ISO),或在首次启动前把凭据写进镜像。
 
 ## 说明
 

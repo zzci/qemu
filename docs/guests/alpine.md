@@ -38,9 +38,10 @@ re-downloads and rebuilds.
 - **SSH** — the template forwards host 2222 → guest 22 (`docker run -p 127.0.0.1:2222:2222`);
   enable sshd in the guest first.
 
-The cloud image uses tiny-cloud: on first boot without a datasource it comes up with a `root`
-account without a password on the serial console (set one immediately, or grow the setup with
-cloud-init user data — mount a nocloud seed ISO via an extra CD-ROM drive).
+The cloud image uses tiny-cloud and, like any cloud image, ships with the `root` account
+**locked** — the serial login prompt rejects it. Provision access with cloud-init user data
+(mount a NoCloud seed ISO via an extra CD-ROM drive) or bake credentials into the image before
+first boot.
 
 ## Notes
 
