@@ -136,13 +136,24 @@ async fn run() -> Result<()> {
     phase.write().unwrap().clear(); // live status now comes from the supervisor
 
     // ---- boot / supervise / (idle & restart) loop ----
-    let saved_marker = PathBuf::from(format!("{stem}.saved"));
+    let vmstate = PathBuf::from(format!("{stem}.vmstate"));
     loop {
         sidecars.ensure().await?; // respawn any that died with the last VM (swtpm does)
         let _ = tokio::fs::remove_file(&qmp_sock).await; // drop a stale socket
+
+        // A vmstate file (from `power save`) means this boot resumes instead of cold-booting:
+        // launchers get the URI as $VMD_INCOMING, an inline `qemu` command gets it appended.
+        let resuming = vmstate.exists();
+        let incoming = format!("exec:cat '{}'", vmstate.display());
         log::info(argv.join(" "));
         let mut command = tokio::process::Command::new(prog);
         command.args(args).stdin(Stdio::null());
+        if resuming {
+            command.env("VMD_INCOMING", &incoming);
+            if cfg.launch.is_none() {
+                command.args(["-incoming", &incoming]);
+            }
+        }
         if let Some(dir) = &cfg.dir {
             // keep QEMU's own output out of the supervisord log, in the guest's home dir
             let log = dir.join("qemu.log");
@@ -156,7 +167,8 @@ async fn run() -> Result<()> {
         }
         let child = command.spawn().with_context(|| format!("spawn {prog}"))?;
 
-        match lifecycle::supervise(child, &qmp_sock, cfg.stop_grace, &mut ctrl_rx, &saved_marker).await? {
+        match lifecycle::supervise(child, &qmp_sock, cfg.stop_grace, &mut ctrl_rx, &vmstate, resuming).await?
+        {
             lifecycle::Outcome::Terminated => {
                 sidecars.stop();
                 std::process::exit(0);

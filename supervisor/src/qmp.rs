@@ -84,35 +84,28 @@ impl Qmp {
         Ok(v.get("status").and_then(Value::as_str).unwrap_or("unknown").to_string())
     }
 
-    /// Run an HMP command through QMP; returns its text output ("" on silent success).
-    /// savevm/loadvm have no `-drive`-friendly QMP equivalent (snapshot-save wants explicit node
-    /// names), while HMP picks the snapshot-capable devices itself.
-    async fn hmp(&self, cmd: &str) -> Result<String> {
-        let v = self.execute("human-monitor-command", json!({ "command-line": cmd })).await?;
-        Ok(v.as_str().unwrap_or_default().trim().to_string())
+    /// Pause the vCPUs (guest freezes; QMP stays responsive).
+    pub async fn stop(&self) -> Result<()> {
+        self.execute("stop", json!({})).await.map(|_| ())
+    }
+    /// Resume the vCPUs after a `stop`.
+    pub async fn cont(&self) -> Result<()> {
+        self.execute("cont", json!({})).await.map(|_| ())
     }
 
-    /// HMP prints nothing on success and an error line on failure.
-    async fn hmp_silent(&self, cmd: &str) -> Result<()> {
-        let out = self.hmp(cmd).await?;
-        if out.is_empty() {
-            Ok(())
-        } else {
-            bail!("{cmd}: {out}")
-        }
+    /// Start a migration to `uri` (e.g. `exec:cat > /path`); completion is polled separately.
+    pub async fn migrate_to(&self, uri: &str) -> Result<()> {
+        // default max-bandwidth throttles to ~128 MiB/s — lift it so a save is disk-bound
+        let _ = self
+            .execute("migrate-set-parameters", json!({ "max-bandwidth": 16_u64 * 1024 * 1024 * 1024 }))
+            .await;
+        self.execute("migrate", json!({ "uri": uri })).await.map(|_| ())
     }
 
-    /// Save RAM + device + disk state into a qcow2 internal snapshot (blocks for RAM-size time).
-    pub async fn savevm(&self, tag: &str) -> Result<()> {
-        self.hmp_silent(&format!("savevm {tag}")).await
-    }
-    /// Revert the VM (RAM, devices, disks) to a saved snapshot.
-    pub async fn loadvm(&self, tag: &str) -> Result<()> {
-        self.hmp_silent(&format!("loadvm {tag}")).await
-    }
-    /// Drop a snapshot; a failure only wastes disk space, so callers may ignore it.
-    pub async fn delvm(&self, tag: &str) {
-        let _ = self.hmp(&format!("delvm {tag}")).await;
+    /// Current migration status: none | active | completed | failed | cancelled | …
+    pub async fn migrate_status(&self) -> Result<String> {
+        let v = self.execute("query-migrate", json!({})).await?;
+        Ok(v.get("status").and_then(Value::as_str).unwrap_or("none").to_string())
     }
 }
 

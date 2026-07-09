@@ -6,7 +6,8 @@ A guest is **config + a template folder** — no Rust changes:
 
 1. Create `rootfs/build/templates/<name>/` with:
    - `launcher` — builds the QEMU command from `VMD_*` env vars and `exec`s it. It **must**
-     include `-qmp "unix:${VMD_QMP},server,nowait"`. Start from `templates/alpine/launcher`
+     include `-qmp "unix:${VMD_QMP},server,nowait"`, and should forward `$VMD_INCOMING` as
+     `-incoming` so `vmd power save`/resume works. Start from `templates/alpine/launcher`
      (simple BIOS) or `templates/win11/launcher` (UEFI + TPM).
    - `install` (optional) — prepares the disk on first boot. Reads `VMD_DISK`/`VMD_DISK_SIZE`
      plus any `[guest.x.install]` keys as UPPERCASE env vars; `FORCE=1` means wipe and rebuild;

@@ -78,9 +78,10 @@ username    = "docker"
   **每 20 秒重按一次**(Windows 在登录界面初始化期间会丢弃该事件);若客户机**睡眠**则先唤醒,
   连续两次入睡则强制断电;超过 `stop_grace_secs`(默认 150)后 SIGKILL 兜底。
 - 客户机干净关机**不会**结束容器:Web 控制台保持在线,`POST /power/start` 再次开机。
-- `POST /power/save` 冻结虚拟机,把内存 + 设备 + 磁盘状态存入 qcow2 内部快照(`savevm`)后停止
+- `POST /power/save` 冻结虚拟机,把内存 + 设备状态流式写入**独立文件 `{state}.vmstate`** 后停止
   QEMU——`/status` 显示 `saved`,容器可以停掉。下次 `start`(容器重启后也一样)从该时刻精确
-  恢复并消耗掉快照。所有可写磁盘必须是 qcow2;win11 模板首次启动会自动把 UEFI NVRAM 转成 qcow2。
+  恢复并消耗该文件。不限磁盘格式;launcher 只需把 `$VMD_INCOMING` 透传为 `-incoming`
+  (模板已内置)。
 - `reset` = 硬复位,`poweroff` = 立即退出 QEMU。
 - QEMU 非零退出 → vmd 以同码退出,supervisord 自动重启。
 

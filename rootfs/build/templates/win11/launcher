@@ -3,16 +3,17 @@
 # the copy). vmd exports placeholders as VMD_<KEY>; MUST use $VMD_QMP so vmd can control the VM.
 set -euo pipefail
 
-# UEFI NVRAM as qcow2: `vmd power save` (savevm) requires every writable block device to support
-# snapshots, and the seeded raw VARS file does not. Converted once; the qcow2 is used from then on.
-VARS_QCOW="${VMD_STATE}.OVMF_VARS.qcow2"
-[ -f "$VARS_QCOW" ] || qemu-img convert -f raw -O qcow2 "${VMD_STATE}.OVMF_VARS.fd" "$VARS_QCOW"
+# `vmd power save` resume: vmd sets $VMD_INCOMING to the saved-state source; pass it through so
+# QEMU restores RAM/devices instead of cold-booting.
+INCOMING=()
+[ -n "${VMD_INCOMING:-}" ] && INCOMING=(-incoming "$VMD_INCOMING")
 
 exec qemu-system-x86_64 \
     -machine "q35,accel=${VMD_ACCEL}" -cpu "${VMD_CPU}" -smp "${VMD_CPUS}" -m "${VMD_RAM}" \
     -rtc base=localtime -uuid "${VMD_UUID}" -name "${VMD_NAME}" -no-user-config -nodefaults \
+    "${INCOMING[@]}" \
     -drive "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd" \
-    -drive "if=pflash,format=qcow2,unit=1,file=${VARS_QCOW}" \
+    -drive "if=pflash,format=raw,unit=1,file=${VMD_STATE}.OVMF_VARS.fd" \
     -chardev "socket,id=chrtpm,path=${VMD_TPM_SOCK}" \
     -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0 \
     -device virtio-rng-pci -device virtio-balloon-pci -device qemu-xhci -device usb-tablet \

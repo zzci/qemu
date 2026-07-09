@@ -3,9 +3,14 @@
 # {dir}/scripts/ on first boot; placeholders arrive as VMD_<KEY>.
 set -euo pipefail
 
+# `vmd power save` resume: vmd sets $VMD_INCOMING to the saved-state source; pass it through.
+INCOMING=()
+[ -n "${VMD_INCOMING:-}" ] && INCOMING=(-incoming "$VMD_INCOMING")
+
 exec qemu-system-x86_64 \
     -machine "q35,accel=${VMD_ACCEL}" -cpu "${VMD_CPU}" -smp "${VMD_CPUS}" -m "${VMD_RAM}" \
     -uuid "${VMD_UUID}" -name "${VMD_NAME}" -no-user-config -nodefaults \
+    "${INCOMING[@]}" \
     -device virtio-rng-pci -device VGA -vnc "unix:${VMD_VNC_SOCK}" \
     -netdev user,id=net0,hostfwd=tcp::2222-:22 -device "virtio-net-pci,netdev=net0,mac=${VMD_MAC}" \
     -serial "unix:${VMD_CONSOLE_SOCK},server,nowait" -monitor none \

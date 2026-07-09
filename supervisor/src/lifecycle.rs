@@ -21,15 +21,11 @@ pub enum Control {
     Reset,
     /// Hard power-off — quit QEMU immediately, no ACPI.
     PowerOff,
-    /// Save RAM+device+disk state to a qcow2 snapshot, then stop QEMU (resumed on next Start).
+    /// Save RAM + device state to the vmstate file, then stop QEMU (the next Start resumes).
     Save,
     /// Query run state; reply on the channel.
     Status(oneshot::Sender<String>),
 }
-
-/// The qcow2 internal-snapshot tag used by save/resume (managedsave semantics: one slot,
-/// consumed on resume).
-pub const SAVE_TAG: &str = "vmd-save";
 
 pub type ControlTx = mpsc::Sender<Control>;
 pub type ControlRx = mpsc::Receiver<Control>;
@@ -46,15 +42,17 @@ pub enum Outcome {
     Crashed(i32),
 }
 
-/// Supervise a freshly-spawned QEMU until it exits. When `saved_marker` exists, the guest is
-/// reverted to the saved snapshot right after QMP comes up (the marker is consumed either way,
-/// so a broken snapshot cannot cause a resume loop).
+/// Supervise a freshly-spawned QEMU until it exits. `vmstate` is the standalone RAM/device-state
+/// file (managedsave-style): `Save` produces it; when `resuming`, QEMU was launched with
+/// `-incoming` reading it, and the file is consumed here right after QMP comes up (a broken
+/// state file therefore cannot cause a resume loop — the retry boots cold).
 pub async fn supervise(
     mut child: Child,
     qmp_path: &Path,
     grace: Duration,
     ctrl: &mut ControlRx,
-    saved_marker: &Path,
+    vmstate: &Path,
+    resuming: bool,
 ) -> Result<Outcome> {
     // Register the signal handlers BEFORE the QMP handshake: a SIGTERM during the connect window
     // must not hit the default disposition (vmd would die and orphan QEMU without an ACPI stop).
@@ -82,18 +80,11 @@ pub async fn supervise(
         _ = sigint.recv() => return kill_before_qmp(child).await,
     };
 
-    // Resume from a saved snapshot before the guest gets anywhere with a cold boot (QMP comes up
-    // while the firmware is still initializing; loadvm reverts disk+RAM to the snapshot anyway).
-    if saved_marker.exists() {
-        log::info(format!("resuming saved state (loadvm {SAVE_TAG})…"));
-        match qmp.loadvm(SAVE_TAG).await {
-            Ok(()) => {
-                qmp.delvm(SAVE_TAG).await; // one-shot slot: reclaim the snapshot space
-                log::info("state restored");
-            }
-            Err(e) => log::warn(format!("resume failed ({e:#}) — continuing with a cold boot")),
-        }
-        let _ = std::fs::remove_file(saved_marker);
+    // Resuming: QEMU's `-incoming exec:cat …` already holds the file open and auto-continues the
+    // guest when the stream ends; unlink it now so the slot is consumed exactly once.
+    if resuming {
+        log::info("restoring saved state (incoming migration)…");
+        let _ = std::fs::remove_file(vmstate);
     }
 
     let mut kill_deadline: Option<Instant> = None;
@@ -137,20 +128,19 @@ pub async fn supervise(
                     Some(Control::Reset)    => { log::info("hard reset (system_reset)"); let _ = qmp.reset().await; }
                     Some(Control::PowerOff) => { log::info("hard power-off (quit)"); let _ = qmp.quit().await; }
                     Some(Control::Save)     => {
-                        // savevm blocks QMP (and this loop) for roughly RAM-size time; status
-                        // queries queue up meanwhile, which is acceptable for a rare operation.
-                        log::info(format!("saving VM state (savevm {SAVE_TAG}) — takes a moment per GB of RAM…"));
-                        match qmp.savevm(SAVE_TAG).await {
-                            Ok(()) => match std::fs::write(saved_marker, format!("{SAVE_TAG}\n")) {
-                                Ok(()) => {
-                                    saved = true;
-                                    log::info("state saved — stopping QEMU (POST /power/start resumes)");
-                                    let _ = qmp.quit().await;
-                                }
-                                // no marker = no resume; keep running rather than lose the session
-                                Err(e) => log::warn(format!("cannot record save marker {}: {e} — VM keeps running", saved_marker.display())),
-                            },
-                            Err(e) => log::warn(format!("save failed: {e:#} — VM keeps running")),
+                        // Blocks this loop for the duration (status queries queue up), which is
+                        // acceptable for a rare operation.
+                        match save_state(&qmp, vmstate).await {
+                            Ok(()) => {
+                                saved = true;
+                                log::info("state saved — stopping QEMU (POST /power/start resumes)");
+                                let _ = qmp.quit().await;
+                            }
+                            Err(e) => {
+                                log::warn(format!("save failed: {e:#} — VM keeps running"));
+                                let _ = std::fs::remove_file(vmstate); // drop a partial file
+                                let _ = qmp.cont().await; // un-freeze if we got as far as stop
+                            }
                         }
                     }
                     Some(Control::Start)    => { /* already running */ }
@@ -232,6 +222,23 @@ pub async fn idle_until_start(ctrl: &mut ControlRx, saved: bool) -> Result<Idle>
                 Some(_) => {} // shutdown/reset/poweroff/save while already off: ignore
                 None => return Ok(Idle::Terminated),
             }
+        }
+    }
+}
+
+/// Managedsave-style state dump: freeze the vCPUs, stream RAM + device state to the standalone
+/// `vmstate` file over `migrate exec:`, and poll until done. The disk needs no snapshot — QEMU
+/// quits right after, so disk content matches the frozen moment exactly.
+async fn save_state(qmp: &Qmp, vmstate: &Path) -> anyhow::Result<()> {
+    log::info(format!("saving VM state -> {} (takes a moment per GB of RAM)…", vmstate.display()));
+    qmp.stop().await?;
+    qmp.migrate_to(&format!("exec:cat > '{}'", vmstate.display())).await?;
+    loop {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        match qmp.migrate_status().await?.as_str() {
+            "completed" => return Ok(()),
+            "active" | "setup" | "none" => {} // still streaming
+            other => anyhow::bail!("migration {other}"),
         }
     }
 }
