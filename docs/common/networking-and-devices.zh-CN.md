@@ -137,6 +137,16 @@ devices:
 -device usb-host,hostbus=1,hostport=2
 ```
 
+> **顺序很重要** —— `usb-host`(以及任何需要 USB 总线的设备)必须排在 `-device qemu-xhci` **之后**。
+> QEMU 按顺序实例化 `-device`,`usb-host` 排在控制器**前面**会报 `No 'usb-bus' bus found for device
+> 'usb-host'`。要加到运行期 **launcher**(它有 `qemu-xhci`),**不要**加到精简的装机阶段(没有 USB
+> 控制器)。只有一个控制器时,直接 `vendorid/productid` 会自动挂上 —— 显式 `bus=xhci.0`(加上控制器
+> `id=xhci`)只在**多个控制器**需要消歧义时才用。
+>
+> **不要在 launcher 里用 `#` 注释某一行设备。** `qemu-system-x86_64 … \` 是用 `\` 续行拼成的**一条**
+> 逻辑命令;shell 拼接后,一个 `#` 会把**它之后的全部内容**(包括 `-qmp`、磁盘等)都注释掉,VM 直接坏。
+> 要开关某个设备:**删掉那一行**,或像 launcher 里 `INCOMING=()` 那样用 env 驱动的 bash 数组来控制。
+
 USB3 设备经 qemu-xhci 直接可用。等时传输设备(音频、摄像头)效果不一,优先按总线/端口挂载。
 
 ### 镜像文件模拟 U 盘

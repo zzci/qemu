@@ -141,6 +141,18 @@ devices:
 -device usb-host,hostbus=1,hostport=2
 ```
 
+> **Order matters** — `usb-host` (anything needing a USB bus) must come **after** `-device qemu-xhci`
+> on the command line. QEMU realizes `-device` in order, so a `usb-host` placed *before* the
+> controller fails with `No 'usb-bus' bus found for device 'usb-host'`. Put it in the runtime
+> **launcher** (which has `qemu-xhci`), **not** the lean install phase (which has no USB controller).
+> With a single controller the plain `vendorid/productid` auto-attaches — an explicit `bus=xhci.0`
+> (and `id=xhci` on the controller) is only needed to disambiguate *multiple* controllers.
+>
+> **Don't `#`-comment a device line in the launcher.** The `qemu-system-x86_64 … \` invocation is
+> one logical line spanning many physical lines via `\`; after the shell joins them, a `#` comments
+> out **everything after it** (dropping `-qmp`, the disk, …) and the VM breaks. To toggle a device,
+> delete its line, or gate it with an env-driven bash array like the launcher's `INCOMING=()` block.
+
 USB3 devices just work through qemu-xhci. For isochronous devices (audio, webcams) results vary —
 prefer bus/port attachment.
 
