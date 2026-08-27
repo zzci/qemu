@@ -12,7 +12,11 @@ version (`*.zh-CN.md`), cross-linked at the top.
 | Guide | What it covers |
 |-------|----------------|
 | [common/engine.md](./common/engine.md) | The vmd engine — configuration (`vmd.toml`, placeholders, `VMD_*` env), template scripts & `{dir}/scripts`, install gating, power lifecycle, web console & API, security. |
-| [common/networking-and-devices.md](./common/networking-and-devices.md) | Network modes (user/NAT, bridge/tap, macvlan, multi-NIC), serial port mapping (console / TCP / host device), USB passthrough, extra disks, display, audio. |
+| [common/devices.md](./common/devices.md) | Devices overview — how the launcher builds them, display, extra disks, CD-ROM, audio, plus the index of the per-device guides below. |
+| [common/networking.md](./common/networking.md) | Network modes: user/NAT with port forwards, bridge/tap, macvlan, multiple NICs. |
+| [common/serial.md](./common/serial.md) | Serial ports: the built-in web console, COM → TCP, host serial passthrough, extra COM ports. |
+| [common/usb.md](./common/usb.md) | USB: the xhci controller, host passthrough by id or bus/port, USB storage images. |
+| [common/file-sharing.md](./common/file-sharing.md) | Sharing host directories with the guest over virtiofs (`shares`). |
 
 ## Guests (per-OS)
 

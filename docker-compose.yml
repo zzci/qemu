@@ -10,7 +10,7 @@ services:
     stop_grace_period: 3m       # let the guest ACPI-shut down before SIGKILL
     devices:
       - /dev/kvm
-      # - /dev/net/tun          # uncomment for a bridge/tap netdev (see docs/common/networking-and-devices.md)
+      # - /dev/net/tun          # uncomment for a bridge/tap netdev (see docs/common/networking.md)
     environment:
       ZSRV_vmd: "true"          # enable the single vmd service (nothing starts unless enabled)
       VMD_OS: "win11"           # which [guest.X] in vmd.toml to boot (win11 | alpine | …)

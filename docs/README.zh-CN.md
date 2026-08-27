@@ -11,7 +11,11 @@
 | 指南 | 内容 |
 |------|------|
 | [common/engine.zh-CN.md](./common/engine.zh-CN.md) | vmd 引擎 —— 配置(`vmd.toml`、占位符、`VMD_*` 环境变量)、模板脚本与 `{dir}/scripts`、安装把关、电源生命周期、Web 控制台与 API、安全。 |
-| [common/networking-and-devices.zh-CN.md](./common/networking-and-devices.zh-CN.md) | 网络模式(用户态/NAT、桥接/tap、macvlan、多网卡)、串口映射(控制台 / TCP / 宿主设备)、USB 直通、额外磁盘、显示、声音。 |
+| [common/devices.zh-CN.md](./common/devices.zh-CN.md) | 设备总览 —— launcher 如何拼设备、显示、额外磁盘、光驱、声音,以及下列分类指南的索引。 |
+| [common/networking.zh-CN.md](./common/networking.zh-CN.md) | 网络模式:用户态/NAT 与端口转发、桥接/tap、macvlan、多网卡。 |
+| [common/serial.zh-CN.md](./common/serial.zh-CN.md) | 串口:内置 Web 控制台、COM → TCP、宿主串口直通、多 COM 口。 |
+| [common/usb.zh-CN.md](./common/usb.zh-CN.md) | USB:xhci 控制器、按 id 或总线/端口直通、镜像文件模拟 U 盘。 |
+| [common/file-sharing.zh-CN.md](./common/file-sharing.zh-CN.md) | 通过 virtiofs(`shares`)把宿主机目录共享给客户机。 |
 
 ## 客户机(按系统)
 

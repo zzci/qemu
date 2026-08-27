@@ -4,7 +4,7 @@
 //! runs install/seed/prepare/sidecars, spawns QEMU and drives the power lifecycle over QMP.
 //!
 //! Placeholders: {accel} {cpu} {cpus} {ram} {name} {uuid} {mac} {state} {dir} {disk} {disk_size}
-//! {vnc_sock} {qmp} {console_sock} {tpm_sock} {web_port}. The QEMU command MUST include
+//! {vnc_sock} {qmp} {console_sock} {tpm_sock} {fs_socks} {fs_tags} {web_port}. The QEMU command MUST include
 //! `-qmp unix:{qmp},server,nowait`.
 //!
 //! Script resolution (launcher, install, …): {dir}/scripts/<slot> (user copy, wins) <- template
@@ -131,6 +131,17 @@ async fn run() -> Result<()> {
         let (cmd, sock) = tpm_command(&stem); // built-in vTPM: swtpm, ready before QEMU
         tokio::fs::create_dir_all(format!("{stem}.tpm")).await.ok();
         items.insert(0, (cmd, Some(sock)));
+    }
+    for share in &cfg.shares {
+        if !Path::new(&share.path).is_dir() {
+            bail!("share '{}': {} is not a directory (mount it into the container)", share.tag, share.path);
+        }
+        let (cmd, sock) = fs_command(&stem, share); // virtiofsd, ready before QEMU
+        let _ = tokio::fs::remove_file(&sock).await; // drop a stale socket
+        items.push((cmd, Some(sock)));
+    }
+    if !cfg.shares.is_empty() {
+        log::warn("virtiofs shares attached — `power save` stays unavailable while they are (vhost-user-fs blocks migration)");
     }
     let mut sidecars = sidecar::Sidecars::start(&items, &vars).await?; // kept up across VM restarts
     phase.write().unwrap().clear(); // live status now comes from the supervisor
@@ -341,6 +352,11 @@ async fn ensure_scripts(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Upstream's Rust virtiofsd, built into the image next to vmd. (QEMU's own C daemon is deprecated
+/// and its sandbox needs `unshare(2)`, i.e. `--cap-add SYS_ADMIN`; this one is happy with the
+/// `chroot` sandbox a stock container already allows.)
+const VIRTIOFSD: &str = "/build/bin/virtiofsd";
+
 /// Built-in vTPM 2.0 (`tpm = true`): the swtpm sidecar `(command, ready-socket)`. The launcher wires
 /// the socket via `{tpm_sock}` / `$VMD_TPM_SOCK`. Pure — the caller creates the `{stem}.tpm` dir.
 fn tpm_command(stem: &str) -> (String, String) {
@@ -350,6 +366,34 @@ fn tpm_command(stem: &str) -> (String, String) {
         "swtpm socket --tpmstate dir={dir} --ctrl type=unixio,path={sock} --tpm2 --pid file={dir}/swtpm.pid"
     );
     (cmd, sock)
+}
+
+/// virtiofsd sidecar for one share: `(command, ready-socket)`. The flags are what lets it run in a
+/// stock container: `chroot` instead of the `namespace` sandbox (that one needs `unshare(2)`), and
+/// dropping `DAC_READ_SEARCH` — a capability Docker does not grant, so keeping it makes virtiofsd
+/// exit with "can't apply the child capabilities". File handles need that capability too, hence
+/// plain O_PATH fds (`--inode-file-handles=never`).
+fn fs_command(stem: &str, share: &config::Share) -> (String, String) {
+    let sock = fs_sock(stem, &share.tag);
+    let cache = share.cache.as_deref().unwrap_or("auto");
+    let cmd = format!(
+        "{VIRTIOFSD} --socket-path='{sock}' --shared-dir '{}' --cache {cache} --sandbox chroot \
+         --modcaps=-DAC_READ_SEARCH --inode-file-handles=never",
+        share.path
+    );
+    (cmd, sock)
+}
+
+fn fs_sock(stem: &str, tag: &str) -> String {
+    format!("{stem}.fs-{tag}.sock")
+}
+
+/// `{fs_socks}` / `{fs_tags}`: the shares as two space-separated lists the launcher walks in step
+/// (empty when the guest has none, which is what keeps the templates' virtiofs block switched off).
+fn fs_vars(stem: &str, shares: &[config::Share]) -> (String, String) {
+    let socks: Vec<String> = shares.iter().map(|s| fs_sock(stem, &s.tag)).collect();
+    let tags: Vec<&str> = shares.iter().map(|s| s.tag.as_str()).collect();
+    (socks.join(" "), tags.join(" "))
 }
 
 /// Copy `src` -> `dest` only when `dest` is missing (preserves the source's mode, incl. +x).
@@ -383,6 +427,9 @@ fn print_plan() -> Result<()> {
     }
     if cfg.tpm {
         println!("sidecar: {} (built-in vTPM)", tpm_command(&cfg.state_stem()).0);
+    }
+    for s in &cfg.shares {
+        println!("sidecar: {} (share {} -> {})", fs_command(&cfg.state_stem(), s).0, s.tag, s.path);
     }
     for s in &cfg.sidecars {
         println!("sidecar: {}", substitute(&s.command, &vars));
@@ -422,6 +469,9 @@ fn build_vars(cfg: &Config, uuid: &str) -> Vars {
     v.insert("qmp", cfg.qmp_sock().display().to_string());
     v.insert("console_sock", cfg.console_sock().display().to_string());
     v.insert("tpm_sock", format!("{}.tpm/swtpm-sock", cfg.state_stem()));
+    let (fs_socks, fs_tags) = fs_vars(&cfg.state_stem(), &cfg.shares);
+    v.insert("fs_socks", fs_socks);
+    v.insert("fs_tags", fs_tags);
     v.insert("web_port", cfg.web_port.to_string());
     v
 }
@@ -445,4 +495,51 @@ async fn run_prepare(cmd: &str) -> Result<()> {
 
 fn print_help() {
     println!("vmd — generic QEMU VM supervisor\n\nUSAGE:\n  vmd run              prepare + boot the active guest (per vmd.toml)\n  vmd print            show the resolved plan + QEMU command (dry run)\n  vmd power <action>   start | shutdown | reset | poweroff | save | status\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fs_command, fs_vars};
+    use crate::config::Share;
+
+    fn share(tag: &str, path: &str) -> Share {
+        Share { tag: tag.into(), path: path.into(), cache: None }
+    }
+
+    #[test]
+    fn share_sidecar_is_a_container_safe_virtiofsd() {
+        let (cmd, sock) = fs_command("/vms/alpine/alpine", &share("host", "/shared"));
+        assert_eq!(sock, "/vms/alpine/alpine.fs-host.sock");
+        assert!(cmd.contains("--socket-path='/vms/alpine/alpine.fs-host.sock'"), "{cmd}");
+        assert!(cmd.contains("--shared-dir '/shared'"), "{cmd}");
+        // namespace mode needs unshare(2)/mount(2), i.e. a privileged container
+        assert!(cmd.contains("--sandbox chroot"), "{cmd}");
+        // both are needed because Docker withholds DAC_READ_SEARCH
+        assert!(cmd.contains("chroot --modcaps=-DAC_READ_SEARCH"), "{cmd}");
+        assert!(cmd.contains("--inode-file-handles=never"), "{cmd}");
+        // the sidecar is split on whitespace, so every flag must survive tokenizing
+        assert_eq!(crate::subst::tokenize(&cmd).len(), 10, "{cmd}");
+        assert!(cmd.contains("--cache auto"), "{cmd}");
+    }
+
+    #[test]
+    fn share_cache_mode_is_overridable() {
+        let mut s = share("host", "/shared");
+        s.cache = Some("never".into());
+        assert!(fs_command("/vms/a/a", &s).0.contains("--cache never"));
+    }
+
+    #[test]
+    fn fs_vars_pair_sockets_with_tags() {
+        let shares = [share("a", "/x"), share("b", "/y")];
+        assert_eq!(
+            fs_vars("/vms/g/d", &shares),
+            ("/vms/g/d.fs-a.sock /vms/g/d.fs-b.sock".to_string(), "a b".to_string())
+        );
+    }
+
+    #[test]
+    fn fs_vars_are_empty_without_shares() {
+        assert_eq!(fs_vars("/vms/g/d", &[]), (String::new(), String::new()));
+    }
 }

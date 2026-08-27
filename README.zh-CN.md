@@ -8,11 +8,13 @@
 [`zzci/ubase`](https://hub.docker.com/r/zzci/ubase)(Ubuntu 22.04 + tini + supervisord)。
 
 特性:内嵌 Web 控制台(noVNC + 串口终端,中英文)· KVM 加速 · 无人值守安装(Windows 11、Alpine)·
-vTPM 2.0 · VNC/串口走 unix socket(除 Web 端口外零 TCP 监听)· 电源 API 与确定性 ACPI 关机 ·
-虚拟机状态存盘/恢复 · 可选访问密码 · 每客户机独立持久化主目录 + 用户可编辑脚本。
+vTPM 2.0 · 基于 virtiofs 的宿主机文件共享 · VNC/串口走 unix socket(除 Web 端口外零 TCP 监听)·
+电源 API 与确定性 ACPI 关机 · 虚拟机状态存盘/恢复 · 可选访问密码 · 每客户机独立持久化主目录 +
+用户可编辑脚本。
 
 📚 **指南:**[引擎](./docs/common/engine.zh-CN.md) ·
-[网络、串口、USB 与设备](./docs/common/networking-and-devices.zh-CN.md) ·
+[设备](./docs/common/devices.zh-CN.md)([网络](./docs/common/networking.zh-CN.md) ·
+[USB](./docs/common/usb.zh-CN.md) · [文件共享](./docs/common/file-sharing.zh-CN.md))·
 [Windows](./docs/guests/windows.zh-CN.md) · [Alpine](./docs/guests/alpine.zh-CN.md) ·
 [贡献 / 新增客户机](./docs/CONTRIBUTING.md)
 
@@ -107,8 +109,7 @@ vmd print          # 干跑:显示解析后的计划与 QEMU 命令
 
 首次启动时模板脚本被复制到 `{dir}/scripts/`(如 `vms/win11/scripts/launcher`、`.../install`)。
 **直接编辑这些副本**——它们属于你,永不被覆盖。launcher 用 `VMD_*` 环境变量拼装 QEMU 命令;改
-分辨率、加磁盘、网卡、串口、USB 都在这里。参见
-[网络与设备](./docs/common/networking-and-devices.zh-CN.md)。
+分辨率、加磁盘、网卡、串口、USB 都在这里。参见[设备指南](./docs/common/devices.zh-CN.md)。
 
 ## 文件布局(每客户机,位于 `dir` 下)
 

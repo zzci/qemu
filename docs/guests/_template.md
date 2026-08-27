@@ -40,7 +40,7 @@ Media handling (download / `/images` lookup / repack), and what "installed" mean
 Web console / serial / SSH / RDP — whatever applies, with the ports the launcher forwards.
 
 Networking and device passthrough are guest-agnostic — see
-[common/networking-and-devices.md](../common/networking-and-devices.md).
+[common/devices.md](../common/devices.md).
 
 ## Troubleshooting
 

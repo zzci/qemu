@@ -40,7 +40,7 @@ policy = "auto"
 Web 控制台 / 串口 / SSH / RDP —— 按实际情况写,并注明 launcher 转发的端口。
 
 网络与设备直通是系统无关的 —— 见
-[common/networking-and-devices.zh-CN.md](../common/networking-and-devices.zh-CN.md)。
+[common/devices.zh-CN.md](../common/devices.zh-CN.md)。
 
 ## 排障
 

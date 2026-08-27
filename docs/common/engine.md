@@ -31,6 +31,7 @@ live copy. Active guest: `$VMD_OS`, else `default`.
 | `qemu` | Inline QEMU command instead of `launch`. Must include `-qmp unix:{qmp},server,nowait`. |
 | `extra` | Extra args appended to the command (placeholder-substituted). |
 | `tpm` | `true` = managed swtpm sidecar; the launcher wires it via `$VMD_TPM_SOCK`. |
+| `shares` | `[{ tag, path, cache }]` host dirs exported over virtiofs; one managed virtiofsd each, wired via `$VMD_FS_SOCKS`/`$VMD_FS_TAGS`. |
 | `seed` | `[{ template, to }]` copy-if-missing (e.g. OVMF NVRAM). |
 | `prepare` | Commands run once before boot (e.g. `mkdir`). |
 | `sidecars` | Extra processes/scripts beside the VM: `[{ command, wait_for }]`. |
@@ -41,7 +42,7 @@ Every placeholder is substituted in config strings **and** exported to the launc
 script and sidecars as `VMD_<KEY>`:
 
 `accel cpu cpus ram name uuid mac state dir disk disk_size vnc_sock qmp console_sock tpm_sock
-web_port`
+fs_socks fs_tags web_port`
 
 `{state}` is the disk path without extension (e.g. `/vms/win11/windows`) — the stem for all state
 files. `accel`/`cpu` are auto-detected (`kvm/host`, falling back to `tcg/max`).

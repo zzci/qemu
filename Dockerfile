@@ -14,17 +14,26 @@ COPY supervisor /src
 COPY --from=ui /w/dist /src/ui/dist
 RUN cargo build --release   # profile strips + LTOs; output: target/release/vmd (UI baked in)
 
+# ---- virtiofsd: upstream's Rust daemon (QEMU 6.2 still ships the deprecated C one, whose sandbox
+# needs unshare(2), i.e. --cap-add SYS_ADMIN). Built on bullseye: its glibc/libcap-ng/libseccomp are
+# older than the runtime's, so the binary just runs there — a musl build would mix libcs and crash.
+FROM rust:1-slim-bullseye AS virtiofsd
+RUN apt-get update && apt-get install -y --no-install-recommends libcap-ng-dev libseccomp-dev pkg-config \
+    && cargo install virtiofsd --version 1.14.0 --locked --root /out \
+    && rm -rf /var/lib/apt/lists/*
+
 # ------------------------------------------------------------------- runtime ----
 FROM zzci/ubase
 
 # QEMU/KVM + OVMF + swtpm + ISO build tools; VNC/console/web are all vmd (no websockify/socat).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        qemu-system-x86 qemu-utils ovmf swtpm \
+        qemu-system-x86 qemu-utils ovmf swtpm libcap-ng0 libseccomp2 \
         p7zip-full xorriso wimtools \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # vmd (web console embedded) + Windows install pipeline + supervisord service.
 COPY --from=vmd /src/target/release/vmd /build/bin/vmd
+COPY --from=virtiofsd /out/bin/virtiofsd /build/bin/virtiofsd
 ADD rootfs /
 COPY supervisor/vmd.toml /etc/vmd/vmd.toml
 RUN chmod -R 0755 /build/bin /build/templates \

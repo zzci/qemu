@@ -8,10 +8,27 @@ set -euo pipefail
 INCOMING=()
 [ -n "${VMD_INCOMING:-}" ] && INCOMING=(-incoming "$VMD_INCOMING")
 
+# virtiofs shares (`shares = [...]` in vmd.toml): vmd runs one virtiofsd per share and hands the
+# sockets + mount tags over as two space-separated lists, empty when no share is configured.
+# vhost-user-fs can only map guest RAM from a *shared* memory backend, hence the memfd object and
+# the `memory-backend=` machine property. Mount inside the guest: `mount -t virtiofs <tag> /mnt`.
+MACHINE="q35,accel=${VMD_ACCEL}"
+FS=()
+if [ -n "${VMD_FS_SOCKS:-}" ]; then
+    MACHINE="${MACHINE},memory-backend=mem"
+    FS=(-object "memory-backend-memfd,id=mem,size=${VMD_RAM},share=on")
+    read -ra fs_socks <<< "${VMD_FS_SOCKS}"
+    read -ra fs_tags <<< "${VMD_FS_TAGS}"
+    for i in "${!fs_socks[@]}"; do
+        FS+=(-chardev "socket,id=vfs${i},path=${fs_socks[i]}"
+             -device "vhost-user-fs-pci,chardev=vfs${i},tag=${fs_tags[i]}")
+    done
+fi
+
 exec qemu-system-x86_64 \
-    -machine "q35,accel=${VMD_ACCEL}" -cpu "${VMD_CPU}" -smp "${VMD_CPUS}" -m "${VMD_RAM}" \
+    -machine "$MACHINE" -cpu "${VMD_CPU}" -smp "${VMD_CPUS}" -m "${VMD_RAM}" \
     -rtc base=localtime -uuid "${VMD_UUID}" -name "${VMD_NAME}" -no-user-config -nodefaults \
-    "${INCOMING[@]}" \
+    "${INCOMING[@]}" "${FS[@]}" \
     -drive "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd" \
     -drive "if=pflash,format=raw,unit=1,file=${VMD_STATE}.OVMF_VARS.fd" \
     -chardev "socket,id=chrtpm,path=${VMD_TPM_SOCK}" \

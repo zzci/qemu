@@ -29,6 +29,7 @@ vmd 不含任何特定系统的知识。一个客户机 = 一个 `[guest.<name>]
 | `qemu` | 内联 QEMU 命令(替代 `launch`)。必须含 `-qmp unix:{qmp},server,nowait`。 |
 | `extra` | 追加到命令的额外参数(会做占位符替换)。 |
 | `tpm` | `true` = 受管 swtpm sidecar;launcher 通过 `$VMD_TPM_SOCK` 接线。 |
+| `shares` | `[{ tag, path, cache }]` 通过 virtiofs 导出给客户机的宿主机目录;每个一个受管 virtiofsd,由 `$VMD_FS_SOCKS`/`$VMD_FS_TAGS` 接线。 |
 | `seed` | `[{ template, to }]` 缺失才复制(如 OVMF NVRAM)。 |
 | `prepare` | 启动前执行的一次性命令(如 `mkdir`)。 |
 | `sidecars` | VM 旁的额外进程/脚本:`[{ command, wait_for }]`。 |
@@ -38,7 +39,7 @@ vmd 不含任何特定系统的知识。一个客户机 = 一个 `[guest.<name>]
 每个占位符既可用于配置字符串替换,也以 `VMD_<KEY>` 导出给 launcher、安装脚本和 sidecar:
 
 `accel cpu cpus ram name uuid mac state dir disk disk_size vnc_sock qmp console_sock tpm_sock
-web_port`
+fs_socks fs_tags web_port`
 
 `{state}` 是磁盘路径去扩展名(如 `/vms/win11/windows`),是所有状态文件的前缀。`accel`/`cpu`
 自动探测(`kvm/host`,退回 `tcg/max`)。

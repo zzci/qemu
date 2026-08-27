@@ -9,12 +9,14 @@ QMP; it contains **no per-OS logic**. Guests are pure configuration: a `[guest.<
 [`zzci/ubase`](https://hub.docker.com/r/zzci/ubase) (Ubuntu 22.04 + tini + supervisord).
 
 Features: embedded web console (noVNC + serial terminal, English/中文) · KVM acceleration ·
-unattended installs (Windows 11, Alpine) · vTPM 2.0 · VNC & serial over unix sockets (no open TCP
-except the web port) · power API with deterministic ACPI shutdown · save/resume VM state to disk ·
-optional access password · per-guest persistent home with user-editable scripts.
+unattended installs (Windows 11, Alpine) · vTPM 2.0 · host file sharing over virtiofs · VNC & serial
+over unix sockets (no open TCP except the web port) · power API with deterministic ACPI shutdown ·
+save/resume VM state to disk · optional access password · per-guest persistent home with
+user-editable scripts.
 
 📚 **Guides:** [engine](./docs/common/engine.md) ·
-[networking, serial, USB & devices](./docs/common/networking-and-devices.md) ·
+[devices](./docs/common/devices.md) ([networking](./docs/common/networking.md) ·
+[USB](./docs/common/usb.md) · [file sharing](./docs/common/file-sharing.md)) ·
 [Windows](./docs/guests/windows.md) · [Alpine](./docs/guests/alpine.md) ·
 [Contributing / add a guest](./docs/CONTRIBUTING.md)
 
@@ -113,8 +115,8 @@ vmd print          # dry run: show the resolved plan + QEMU command
 On first boot the guest's template scripts are copied to `{dir}/scripts/` (e.g.
 `vms/win11/scripts/launcher`, `.../install`). **Edit those copies** — they are yours and are never
 overwritten. The launcher builds the QEMU command from `VMD_*` env vars; change resolution, add
-disks, NICs, serial ports or USB devices there. See
-[networking & devices](./docs/common/networking-and-devices.md).
+disks, NICs, serial ports or USB devices there. See the
+[device guides](./docs/common/devices.md).
 
 ## File layout (per guest, under `dir`)
 

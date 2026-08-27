@@ -7,10 +7,27 @@ set -euo pipefail
 INCOMING=()
 [ -n "${VMD_INCOMING:-}" ] && INCOMING=(-incoming "$VMD_INCOMING")
 
+# virtiofs shares (`shares = [...]` in vmd.toml): vmd runs one virtiofsd per share and hands the
+# sockets + mount tags over as two space-separated lists, empty when no share is configured.
+# vhost-user-fs can only map guest RAM from a *shared* memory backend, hence the memfd object and
+# the `memory-backend=` machine property. Mount inside the guest: `mount -t virtiofs <tag> /mnt`.
+MACHINE="q35,accel=${VMD_ACCEL}"
+FS=()
+if [ -n "${VMD_FS_SOCKS:-}" ]; then
+    MACHINE="${MACHINE},memory-backend=mem"
+    FS=(-object "memory-backend-memfd,id=mem,size=${VMD_RAM},share=on")
+    read -ra fs_socks <<< "${VMD_FS_SOCKS}"
+    read -ra fs_tags <<< "${VMD_FS_TAGS}"
+    for i in "${!fs_socks[@]}"; do
+        FS+=(-chardev "socket,id=vfs${i},path=${fs_socks[i]}"
+             -device "vhost-user-fs-pci,chardev=vfs${i},tag=${fs_tags[i]}")
+    done
+fi
+
 exec qemu-system-x86_64 \
-    -machine "q35,accel=${VMD_ACCEL}" -cpu "${VMD_CPU}" -smp "${VMD_CPUS}" -m "${VMD_RAM}" \
+    -machine "$MACHINE" -cpu "${VMD_CPU}" -smp "${VMD_CPUS}" -m "${VMD_RAM}" \
     -uuid "${VMD_UUID}" -name "${VMD_NAME}" -no-user-config -nodefaults \
-    "${INCOMING[@]}" \
+    "${INCOMING[@]}" "${FS[@]}" \
     -device virtio-rng-pci -device VGA -vnc "unix:${VMD_VNC_SOCK}" \
     -netdev user,id=net0,hostfwd=tcp::2222-:22 -device "virtio-net-pci,netdev=net0,mac=${VMD_MAC}" \
     -serial "unix:${VMD_CONSOLE_SOCK},server,nowait" -monitor none \

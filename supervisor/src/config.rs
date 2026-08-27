@@ -44,6 +44,9 @@ struct RawGuest {
     /// Built-in vTPM 2.0: vmd runs swtpm as a managed sidecar; launcher uses `$VMD_TPM_SOCK`.
     #[serde(default)]
     tpm: bool,
+    /// virtiofs shares of host directories; vmd runs one virtiofsd sidecar per entry.
+    #[serde(default)]
+    shares: Vec<Share>,
     #[serde(default)]
     sidecars: Vec<RawSidecar>,
     #[serde(default)]
@@ -58,6 +61,16 @@ struct RawGuest {
 pub struct Seed {
     pub template: String,
     pub to: String,
+}
+
+/// A host directory exported to the guest over virtiofs: `{ tag, path }` (+ optional `cache`).
+/// The guest mounts it by `tag` (`mount -t virtiofs <tag> /mnt`).
+#[derive(Deserialize, Clone)]
+pub struct Share {
+    pub tag: String,
+    pub path: String,
+    /// virtiofsd cache mode: auto (default) | always | never.
+    pub cache: Option<String>,
 }
 
 /// Sidecar: a command string, or `{ command, wait_for }` (block until the path exists).
@@ -109,6 +122,7 @@ pub struct Config {
     pub launch: Option<String>,
     pub extra: Vec<String>,
     pub tpm: bool,
+    pub shares: Vec<Share>,
     pub sidecars: Vec<Sidecar>,
     pub prepare: Vec<String>,
     pub seed: Vec<Seed>,
@@ -138,6 +152,7 @@ impl Config {
         if qemu.trim().is_empty() && launch.is_none() {
             bail!("[guest.{name}] needs either a `qemu` command or a `launch` script");
         }
+        validate_shares(&name, &g.shares)?;
         let dir = g.dir.clone().filter(|s| !s.trim().is_empty()).map(PathBuf::from);
         let disk = resolve_disk(g.disk.as_deref(), dir.as_deref(), &name)?;
 
@@ -152,6 +167,7 @@ impl Config {
             launch,
             extra: g.extra.clone(),
             tpm: g.tpm,
+            shares: g.shares.clone(),
             sidecars: g.sidecars.iter().map(Sidecar::from).collect(),
             prepare: g.prepare.clone(),
             seed: g.seed.clone(),
@@ -182,6 +198,20 @@ impl Config {
 /// to form the per-VM state prefix.
 fn state_stem_of(disk: &Path) -> String {
     disk.with_extension("").to_string_lossy().into_owned()
+}
+
+/// A share tag ends up both in the virtiofs socket name and in `-device …,tag=`, and tags are
+/// passed to launchers as a space-separated list — so keep them simple and unique.
+fn validate_shares(name: &str, shares: &[Share]) -> Result<()> {
+    for (i, s) in shares.iter().enumerate() {
+        if s.tag.trim().is_empty() || s.tag.contains(['/', ',', ' ', '\t']) {
+            bail!("[guest.{name}] share tag {:?} must be non-empty and free of '/', ',' and spaces", s.tag);
+        }
+        if shares[..i].iter().any(|o| o.tag == s.tag) {
+            bail!("[guest.{name}] duplicate share tag {:?}", s.tag);
+        }
+    }
+    Ok(())
 }
 
 /// Disk path: absolute wins; relative joins `dir`; omitted -> `{dir}/disk.qcow2`.
@@ -228,8 +258,26 @@ fn config_path() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_disk, state_stem_of};
+    use super::{resolve_disk, state_stem_of, validate_shares, Share};
     use std::path::Path;
+
+    fn share(tag: &str) -> Share {
+        Share { tag: tag.into(), path: "/shared".into(), cache: None }
+    }
+
+    #[test]
+    fn share_tags_must_be_usable_as_a_device_tag_and_socket_name() {
+        assert!(validate_shares("g", &[share("host"), share("data")]).is_ok());
+        assert!(validate_shares("g", &[share("")]).is_err());
+        assert!(validate_shares("g", &[share("a/b")]).is_err());
+        assert!(validate_shares("g", &[share("a,b")]).is_err());
+        assert!(validate_shares("g", &[share("a b")]).is_err());
+    }
+
+    #[test]
+    fn duplicate_share_tags_are_rejected() {
+        assert!(validate_shares("g", &[share("host"), share("host")]).is_err());
+    }
 
     #[test]
     fn state_stem_strips_only_the_file_extension() {

@@ -9,7 +9,7 @@
 # boot, user edits win) or a PATH (custom launcher, copied to {dir}/scripts/launcher).
 #
 # Scripts get every placeholder as VMD_<KEY>: ACCEL CPU CPUS RAM NAME UUID MAC STATE DIR DISK
-# DISK_SIZE VNC_SOCK QMP CONSOLE_SOCK TPM_SOCK WEB_PORT. The launcher MUST use
+# DISK_SIZE VNC_SOCK QMP CONSOLE_SOCK TPM_SOCK FS_SOCKS FS_TAGS WEB_PORT. The launcher MUST use
 # `-qmp unix:$VMD_QMP,server,nowait`. VNC/console are unix sockets (no TCP, no VNC password);
 # the web layer is the access gate. Inline `qemu = "..."` is still supported instead of `launch`.
 #
@@ -48,6 +48,12 @@ image_index = 1
 
 # `sidecars` runs extra programs/scripts next to the VM (VMD_<KEY> env; optional ready-path):
 # sidecars = [ { command = "{dir}/scripts/net-setup", wait_for = "/run/vmd-net.ready" } ]
+
+# `shares` exports host directories to the guest over virtiofs (one managed virtiofsd each; the
+# launcher wires them from $VMD_FS_SOCKS/$VMD_FS_TAGS). No extra container capability needed, but
+# it disables `power save` (vhost-user-fs blocks migration). Windows also needs WinFsp +
+# the virtio-win viofs driver in the guest — see docs/common/file-sharing.md.
+# shares = [ { tag = "host", path = "/shared" } ]      # guest: mount -t virtiofs host /mnt
 
 # ---- Alpine (Linux) ---------------------------------------------------------------
 [guest.alpine]

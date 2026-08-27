@@ -65,6 +65,9 @@ Signals while installing: watch it live on the web console; the qcow2 grows; the
 - **RDP** — port 3389 is forwarded by the launcher and enabled by the unattend (the guest firewall
   is disabled entirely — this is a dev/lab image)
   (`docker run -p 127.0.0.1:3389:3389`, log in as `username`/`password`).
+- **Host files** — virtiofs `shares` work on Windows too, but the guest needs WinFsp + the viofs
+  driver/service; see [common/file-sharing.md](../common/file-sharing.md). RDP drive redirection
+  is the zero-install alternative.
 
 ## Cloning
 
