@@ -45,15 +45,19 @@ password    = "admin"             # change this — it becomes the guest admin p
 language    = "en-US"
 image_index = 1
 # virtio_sha256 = "<hex>"         # verify a downloaded virtio-win.iso (skipped when unset)
+# winfsp_url    = "https://…/winfsp-X.Y.msi"   # WinFsp staged into the media for virtiofs `shares`
+                                  # (default: the pinned upstream release; or drop the msi at
+                                  #  /images/winfsp.msi and it is used as-is)
+# winfsp_sha256 = "<hex>"         # verify a downloaded winfsp.msi (skipped when unset)
 
 # `sidecars` runs extra programs/scripts next to the VM (VMD_<KEY> env; optional ready-path):
 # sidecars = [ { command = "{dir}/scripts/net-setup", wait_for = "/run/vmd-net.ready" } ]
 
 # `shares` exports host directories to the guest over virtiofs (one managed virtiofsd each; the
 # launcher wires them from $VMD_FS_SOCKS/$VMD_FS_TAGS). No extra container capability needed, but
-# it disables `power save` (vhost-user-fs blocks migration). Windows also needs WinFsp +
-# the virtio-win viofs driver in the guest — see docs/common/file-sharing.md.
-# shares = [ { tag = "host", path = "/shared" } ]      # guest: mount -t virtiofs host /mnt
+# it disables `power save` (vhost-user-fs blocks migration). Windows guests installed by this image
+# get WinFsp + the viofs driver/service automatically — see docs/common/file-sharing.md.
+# shares = [ { tag = "host", path = "/shared" } ]      # Linux: mount -t virtiofs host /mnt
 
 # ---- Alpine (Linux) ---------------------------------------------------------------
 [guest.alpine]

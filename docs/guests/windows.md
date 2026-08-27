@@ -37,6 +37,9 @@ region      = "en-US"           # user locale (optional; defaults to language)
 keyboard    = "en-US"           # input locale (optional; defaults to language)
 image_index = 1                 # install.wim edition index (1 = LTSC on the LTSC ISO)
 # virtio_sha256 = "<hex>"       # verify a downloaded virtio-win.iso (unverified when unset)
+# winfsp_url    = "https://…"   # WinFsp installer for virtiofs `shares` (default: pinned release;
+                                # /images/winfsp.msi is used as-is when present)
+# winfsp_sha256 = "<hex>"       # verify a downloaded winfsp.msi (unverified when unset)
 ```
 
 Install keys become UPPERCASE env vars for `{dir}/scripts/install`; `language` accepts friendly
@@ -51,8 +54,9 @@ a zh-CN ISO.
    (an unavailable language falls back to the image default instead of hanging setup);
 2. render `autounattend.xml` (accounts, locale, TPM/SecureBoot/RAM checks bypassed, RDP on,
    telemetry trimmed, **hibernation off + power button = shutdown** for reliable ACPI control);
-3. slipstream virtio drivers (`$WinpeDriver$`); remaster a no-prompt UEFI ISO (boots without
-   "Press any key");
+3. slipstream virtio drivers (`$WinpeDriver$`); stage the virtiofs guest side (WinFsp + the viofs
+   driver and `virtiofs.exe` service, installed at first logon); remaster a no-prompt UEFI ISO
+   (boots without "Press any key");
 4. run a lean throwaway install VM (`cache=unsafe`, no TPM/NIC) and wait for its clean power-off;
 5. write `{state}.install` = `installed`; vmd then boots the real device model.
 
@@ -65,9 +69,9 @@ Signals while installing: watch it live on the web console; the qcow2 grows; the
 - **RDP** — port 3389 is forwarded by the launcher and enabled by the unattend (the guest firewall
   is disabled entirely — this is a dev/lab image)
   (`docker run -p 127.0.0.1:3389:3389`, log in as `username`/`password`).
-- **Host files** — virtiofs `shares` work on Windows too, but the guest needs WinFsp + the viofs
-  driver/service; see [common/file-sharing.md](../common/file-sharing.md). RDP drive redirection
-  is the zero-install alternative.
+- **Host files** — add `shares` to the guest and the host directory shows up as a drive letter:
+  the unattended install already put WinFsp and the viofs driver/service in place. See
+  [common/file-sharing.md](../common/file-sharing.md).
 
 ## Cloning
 

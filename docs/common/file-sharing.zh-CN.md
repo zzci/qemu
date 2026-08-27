@@ -46,15 +46,29 @@ echo "host /mnt/host virtiofs defaults 0 0" >> /etc/fstab    # 重启后仍然�
 
 ### Windows
 
-Windows 能看到设备(PCI `1af4:105a`),但要装**两样**东西才能用,本镜像都无法替你装:
+Windows 要装两样东西才能用这个设备(PCI `1af4:105a`):**[WinFsp](https://winfsp.dev)**
+(`virtiofs.exe` 依赖的 FUSE 层)和 **viofs** —— `virtio-win.iso` 里的 `VirtioFsDrv` 内核驱动
+加 `virtiofs.exe` 用户态服务。
 
-1. **[WinFsp](https://winfsp.dev)** —— `virtiofs.exe` 依赖的 FUSE 层(`winfsp-x64.dll`)。它**不在**
-   `virtio-win.iso` 里,需要在客户机内自行下载安装。
-2. **viofs** —— `VirtioFsDrv` 内核驱动**和** `virtiofs.exe` 用户态服务,都在 `virtio-win.iso`
-   里(Windows 10 1709+ / 11 用 `viofs\w11\amd64\`)。
+**用本镜像安装出来的 Windows 会自动装好这两样。** 安装脚本把 WinFsp(自动下载一次,可用
+`[guest.win11.install]` 的 `winfsp_url` / `winfsp_sha256` 控制)和 viofs 文件塞进无人值守介质,
+unattend 在首次登录时装好:驱动用 `pnputil`,服务用 `sc create VirtioFsSvc`。所以只要配上
+`shares` 就行——宿主机目录会以 **`Z:`** 出现,卷标就是该 share 的 `tag`。
 
-运行期 launcher 没有光驱,先把驱动 ISO 加进 launcher 再重启 VM(也没有 SATA 控制器——自己加一个,
-或挂到模板已有的 `qemu-xhci` 上):
+接线细节:
+
+- 服务是**延迟自动启动**,且只依赖 `WinFsp.Launcher`,开机一分钟左右才起来。首次开机时 viofs
+  驱动服务(`VirtioFsDrv`)还不存在——PnP 第一次看到设备时才创建它——普通 auto 启动会以 `1075`
+  失败,必须重启一次才可用。另外还配了失败重试作为兜底。
+- 它只挂**一个** share(`virtiofs.exe -m Z:`)。配多个 share 时,给每个额外的 tag 再建一个服务:
+  `sc create VirtioFsSvc2 binPath= "\"C:\Program Files\Virtio-Win\VioFS\virtiofs.exe\" -t <tag> -m Y:" …`。
+- 安装日志:`C:\Windows\Temp\virtiofs-setup.log`。状态:`sc.exe query VirtioFsSvc`(服务)、
+  `sc.exe query VirtioFsDrv`(驱动,只有挂了 share 时才存在)。
+
+#### 给已有的 Windows 补装
+
+如果客户机是在这套流程之前装的,就手动来。运行期 launcher 没有光驱,先把驱动 ISO 加进 launcher
+再重启 VM(也没有 SATA 控制器——自己加一个,或挂到模板已有的 `qemu-xhci` 上):
 
 ```bash
 -device ahci,id=ahci \
@@ -76,11 +90,8 @@ sc.exe create VirtioFsSvc binPath="C:\Program Files\Virtio-Win\VioFS\virtiofs.ex
 sc.exe start VirtioFsSvc
 ```
 
-之后共享会以盘符出现(默认 `Z:`)。可用 `sc.exe query VirtioFsDrv`(驱动)和
-`sc.exe query VirtioFsSvc`(服务)检查。
-
-只是偶尔传个文件的话,这套流程偏重 —— RDP 驱动器重定向(`mstsc` → 本地资源 → 驱动器)在客户机内
-什么都不用装。
+WinFsp 也要装(驱动 ISO 里没有)。只是偶尔传个文件的话,RDP 驱动器重定向(`mstsc` → 本地资源 →
+驱动器)在客户机里什么都不用装。
 
 ## 取舍
 

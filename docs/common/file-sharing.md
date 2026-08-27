@@ -48,16 +48,32 @@ echo "host /mnt/host virtiofs defaults 0 0" >> /etc/fstab    # persist across re
 
 ### Windows
 
-Windows sees the device (PCI `1af4:105a`) but cannot use it until **two** pieces are installed —
-neither ships in this image:
+Windows needs two pieces before it can touch the device (PCI `1af4:105a`): **[WinFsp](https://winfsp.dev)**
+(the FUSE layer `virtiofs.exe` links against) and **viofs** — the `VirtioFsDrv` kernel driver plus
+the `virtiofs.exe` user-space service from `virtio-win.iso`.
 
-1. **[WinFsp](https://winfsp.dev)** — the FUSE layer `virtiofs.exe` links against
-   (`winfsp-x64.dll`). It is **not** on `virtio-win.iso`; download and install it in the guest.
-2. **viofs** — the `VirtioFsDrv` kernel driver *and* the `virtiofs.exe` user-space service, both
-   from `virtio-win.iso` (`viofs\w11\amd64\` for Windows 10 1709+ / 11).
+**A Windows guest installed by this image gets both automatically.** The installer stages WinFsp
+(downloaded once; `winfsp_url` / `winfsp_sha256` in `[guest.win11.install]`) and the viofs bits into
+the unattended media, and the unattend installs them at first logon: driver via `pnputil`, service
+via `sc create VirtioFsSvc`. So configuring `shares` is all it takes — the host directory appears as
+**`Z:`**, with the share's `tag` as the volume label.
 
-The runtime launcher has no CD-ROM, so add the driver ISO to it and power-cycle the VM (there is
-no SATA controller either — add one, or hang the drive off the template's `qemu-xhci`):
+Notes on how it is wired:
+
+- The service is **delayed-auto** and only depends on `WinFsp.Launcher`, so it starts a minute or
+  so after boot. On the very first boot the viofs driver service (`VirtioFsDrv`) does not exist yet
+  — PnP creates it when it first sees the device — and a plain auto-start service would die with
+  `1075` and only work after a reboot. Failure actions retry the start as a second safety net.
+- It mounts **one** share (`virtiofs.exe -m Z:`). With several `shares`, add a service per extra
+  tag: `sc create VirtioFsSvc2 binPath= "\"C:\Program Files\Virtio-Win\VioFS\virtiofs.exe\" -t <tag> -m Y:" …`.
+- Setup log: `C:\Windows\Temp\virtiofs-setup.log`. State: `sc.exe query VirtioFsSvc` (service) and
+  `sc.exe query VirtioFsDrv` (driver, exists only while a share is attached).
+
+#### Retrofitting an existing Windows guest
+
+For a guest installed before this was in place, do it by hand. The runtime launcher has no CD-ROM,
+so add the driver ISO to it and power-cycle the VM (there is no SATA controller either — add one,
+or hang the drive off the template's `qemu-xhci`):
 
 ```bash
 -device ahci,id=ahci \
@@ -79,11 +95,8 @@ sc.exe create VirtioFsSvc binPath="C:\Program Files\Virtio-Win\VioFS\virtiofs.ex
 sc.exe start VirtioFsSvc
 ```
 
-The share then appears as a drive letter (`Z:` by default). Check the pieces with
-`sc.exe query VirtioFsDrv` (driver) and `sc.exe query VirtioFsSvc` (service).
-
-For an occasional file transfer this is a lot of setup — RDP drive redirection (`mstsc` →
-Local Resources → Drives) needs nothing in the guest.
+WinFsp has to be installed too (it is not on the driver ISO). For a one-off file transfer, RDP
+drive redirection (`mstsc` → Local Resources → Drives) needs nothing in the guest at all.
 
 ## Trade-offs
 

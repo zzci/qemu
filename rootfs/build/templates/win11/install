@@ -38,6 +38,9 @@ UA="Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 # The Windows ISO is NOT auto-downloaded (Microsoft eval URLs expire / change) — the user must
 # provide it. The virtio driver ISO has a stable URL and is fetched only as a fallback.
 : "${VIRTIO_URL:=https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso}"
+# WinFsp: the FUSE layer virtiofs needs in the guest. Not on virtio-win.iso — staged into the
+# install media so `shares` works without any manual step in Windows.
+: "${WINFSP_URL:=https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi}"
 
 # Per-VM state derived from the disk path (clones never collide on one /storage).
 STATE="${DISK%.*}"
@@ -89,6 +92,42 @@ resolve_virtio_iso() {
     else
         log "WARN: no VIRTIO_SHA256 pin — downloaded driver ISO is unverified (set virtio_sha256 in [guest.x.install] to enforce)"
     fi
+}
+
+resolve_winfsp() {
+    if [ -n "${WINFSP_MSI:-}" ] && [ -f "$WINFSP_MSI" ]; then return; fi
+    for c in "$IMAGES/winfsp.msi" "$STORAGE/winfsp.msi"; do
+        [ -f "$c" ] && { WINFSP_MSI="$c"; return; }
+    done
+    WINFSP_MSI="$STORAGE/winfsp.msi"
+    log "downloading WinFsp -> $WINFSP_MSI"
+    curl -fL -C - -A "$UA" -o "$WINFSP_MSI" "$WINFSP_URL" || die "WinFsp download failed ($WINFSP_URL)"
+    # This installer runs in the guest — verify when a pin is provided.
+    if [ -n "${WINFSP_SHA256:-}" ]; then
+        echo "$WINFSP_SHA256  $WINFSP_MSI" | sha256sum -c - >/dev/null 2>&1 \
+            || die "winfsp.msi sha256 mismatch (expected $WINFSP_SHA256)"
+        log "winfsp.msi sha256 OK"
+    else
+        log "WARN: no WINFSP_SHA256 pin — downloaded WinFsp installer is unverified (set winfsp_sha256 in [guest.x.install] to enforce)"
+    fi
+}
+
+# Guest side of virtiofs (`shares`): the viofs driver + virtiofs.exe service and WinFsp, plus the
+# script the unattend runs. Staged twice — under sources/$OEM$/$1/Setup, which Windows Setup copies
+# to C:\Setup, and at the ISO root (\Setup) as a fallback if $OEM$ is ignored.
+stage_virtiofs() {
+    local work="$1" stage
+    resolve_winfsp
+    for stage in "$work/Setup" "$work/sources/\$OEM\$/\$1/Setup"; do
+        mkdir -p "$stage/VioFS"
+        7z e -y -o"$stage/VioFS" "$VIRTIO_ISO" \
+            "viofs/w11/amd64/viofs.inf" "viofs/w11/amd64/viofs.sys" \
+            "viofs/w11/amd64/viofs.cat" "viofs/w11/amd64/virtiofs.exe" >/dev/null 2>&1 \
+            || die "viofs bits not found in $VIRTIO_ISO"
+        cp "$CONFIG_DIR/setup-virtiofs.cmd" "$stage/"
+        cp "$WINFSP_MSI" "$stage/winfsp.msi"
+    done
+    log "staged virtiofs guest bits: viofs driver + service, WinFsp ($(basename "$WINFSP_MSI"))"
 }
 
 # Guard against LANGUAGE / IMAGE_INDEX that the source ISO can't satisfy (which would make the
@@ -184,6 +223,8 @@ EOF
     for d in viostor vioscsi NetKVM Balloon vioserial viorng pvpanic viogpudo; do
         7z x -y -o"$drv" "$VIRTIO_ISO" "$d/w11/amd64/*" >/dev/null 2>&1 || true
     done
+
+    stage_virtiofs "$work"
 
     local etfs uefi vid
     etfs="$(cd "$work" && find . -ipath './boot/etfsboot.com' | head -1 | sed 's|^\./||')"

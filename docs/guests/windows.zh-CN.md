@@ -37,6 +37,9 @@ region      = "zh-CN"           # 用户区域(可选;默认同 language)
 keyboard    = "zh-CN"           # 输入法区域(可选;默认同 language)
 image_index = 1                 # install.wim 版本索引(LTSC ISO 上 1 = LTSC)
 # virtio_sha256 = "<hex>"       # 校验自动下载的 virtio-win.iso(不设置则不校验)
+# winfsp_url    = "https://…"   # virtiofs `shares` 用的 WinFsp 安装包(默认用固定版本;
+                                # 放了 /images/winfsp.msi 则直接用它)
+# winfsp_sha256 = "<hex>"       # 校验自动下载的 winfsp.msi(不设置则不校验)
 ```
 
 install 的键会大写后作为环境变量传给 `{dir}/scripts/install`;`language` 也接受友好名
@@ -50,7 +53,8 @@ install 的键会大写后作为环境变量传给 `{dir}/scripts/install`;`lang
    避免安装程序停在语言页);
 2. 渲染 `autounattend.xml`(账户、区域;跳过 TPM/SecureBoot/内存检查;开 RDP;精简遥测;
    **禁用休眠 + 电源键=关机**,保证 ACPI 控制可靠);
-3. 滑流注入 virtio 驱动(`$WinpeDriver$`);重打无按键提示的 UEFI ISO(免"Press any key");
+3. 滑流注入 virtio 驱动(`$WinpeDriver$`);把 virtiofs 客户机端(WinFsp + viofs 驱动与
+   `virtiofs.exe` 服务,首次登录时安装)塞进介质;重打无按键提示的 UEFI ISO(免"Press any key");
 4. 用一次性精简安装 VM(`cache=unsafe`、无 TPM/网卡)跑安装,等它干净关机;
 5. 写 `{state}.install` = `installed`;vmd 随即用正式设备模型引导系统。
 
@@ -61,9 +65,8 @@ install 的键会大写后作为环境变量传给 `{dir}/scripts/install`;`lang
 - **Web 控制台** —— `http://<host>:8006`(noVNC 显示 + 电源控制)。
 - **RDP** —— launcher 转发 3389,unattend 已启用(guest 防火墙已整体关闭——开发/实验用镜像)(`docker run -p 127.0.0.1:3389:3389`,用
   `username`/`password` 登录)。
-- **宿主机文件** —— virtiofs `shares` 在 Windows 上同样可用,但客户机里要装 WinFsp 和 viofs
-  驱动/服务,见 [common/file-sharing.zh-CN.md](../common/file-sharing.zh-CN.md);不想装东西就用
-  RDP 驱动器重定向。
+- **宿主机文件** —— 给客户机加 `shares`,宿主机目录就会以盘符出现:无人值守安装已经把 WinFsp
+  和 viofs 驱动/服务装好了。见 [common/file-sharing.zh-CN.md](../common/file-sharing.zh-CN.md)。
 
 ## 克隆
 

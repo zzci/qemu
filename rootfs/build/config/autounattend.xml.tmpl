@@ -139,6 +139,11 @@
         <SynchronousCommand wcm:action="add"><Order>15</Order><CommandLine>cmd /c schtasks /Change /TN "\Microsoft\Windows\Customer Experience Improvement Program\Consolidator" /Disable</CommandLine></SynchronousCommand>
         <SynchronousCommand wcm:action="add"><Order>16</Order><CommandLine>cmd /c schtasks /Change /TN "\Microsoft\Windows\Windows Error Reporting\QueueReporting" /Disable</CommandLine></SynchronousCommand>
         <SynchronousCommand wcm:action="add"><Order>17</Order><CommandLine>powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-AppxProvisionedPackage -Online | Where-Object { $_.DisplayName -match 'Clipchamp|BingNews|BingWeather|GamingApp|GetHelp|Getstarted|WindowsMaps|People|PowerAutomate|Todos|Xbox|YourPhone|ZuneMusic|ZuneVideo|Teams|Copilot|QuickAssist|WindowsFeedbackHub|549981C3F5F10' } | Remove-AppxProvisionedPackage -Online -AllUsers"</CommandLine></SynchronousCommand>
+        <!-- virtiofs guest side: WinFsp + the viofs driver/service, so a `shares` entry in vmd.toml
+             mounts as a drive letter with nothing to do in the guest. The install script stages the
+             folder under sources\$OEM$ (Windows Setup copies it to C:\Setup) and at the media root
+             (\Setup) as a fallback; log ends up in C:\Windows\Temp\virtiofs-setup.log. -->
+        <SynchronousCommand wcm:action="add"><Order>18</Order><CommandLine>cmd /c "if exist C:\Setup\setup-virtiofs.cmd (call C:\Setup\setup-virtiofs.cmd) else (for %d in (D E F G H) do @if exist %d:\Setup\setup-virtiofs.cmd call %d:\Setup\setup-virtiofs.cmd)"</CommandLine></SynchronousCommand>
         <SynchronousCommand wcm:action="add"><Order>98</Order><CommandLine>cmd /c echo done &gt; C:\Windows\Temp\unattend_done.txt</CommandLine></SynchronousCommand>
         <SynchronousCommand wcm:action="add"><Order>99</Order><CommandLine>cmd /c shutdown /s /t 15 /c "unattend install complete"</CommandLine></SynchronousCommand>
       </FirstLogonCommands>
