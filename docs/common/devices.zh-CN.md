@@ -37,6 +37,19 @@ GPU 直通(VFIO)目前引擎还没有接入——它需要宿主机 IOMMU 配置
 加一对 `-drive file=…,if=none,id=disk1 -device virtio-blk-pci,drive=disk1`;镜像在 `prepare` 里
 创建(`qemu-img create -f qcow2 {dir}/data.qcow2 100G`)。
 
+## 回收磁盘空间
+
+模板给客户机磁盘加了 `discard=unmap,detect-zeroes=unmap`,所以在客户机里删文件会在 qcow2 上打洞,
+而不是只增不减:
+
+```bash
+fstrim -av        # Linux 客户机
+defrag /L C:      # Windows 客户机(Optimize-Volume -ReTrim)
+```
+
+客户机关机后再 `qemu-img convert -O qcow2 disk.qcow2 new.qcow2`,即可把释放掉的簇从镜像里去掉
+(顺便消除碎片)。
+
 ## 光驱
 
 运行期 launcher 没有 SATA 控制器(只有精简的装机阶段有),所以要自己加一个:

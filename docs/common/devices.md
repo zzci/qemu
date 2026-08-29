@@ -40,6 +40,19 @@ GPU passthrough (VFIO) is not wired up in the engine yet — it needs host IOMMU
 Add a `-drive file=…,if=none,id=disk1 -device virtio-blk-pci,drive=disk1` pair; create the image
 in `prepare` (`qemu-img create -f qcow2 {dir}/data.qcow2 100G`).
 
+## Reclaiming disk space
+
+The templates open the guest disk with `discard=unmap,detect-zeroes=unmap`, so deleting files
+inside the guest punches holes in the qcow2 instead of letting it only ever grow:
+
+```bash
+fstrim -av        # Linux guest
+defrag /L C:      # Windows guest (Optimize-Volume -ReTrim)
+```
+
+With the guest powered off, `qemu-img convert -O qcow2 disk.qcow2 new.qcow2` then rewrites the
+image without the freed clusters (and defragments it).
+
 ## CD-ROM
 
 The runtime launchers have no SATA controller (only the lean install phase does), so add one:

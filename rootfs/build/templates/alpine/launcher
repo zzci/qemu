@@ -31,6 +31,6 @@ exec qemu-system-x86_64 \
     -device virtio-rng-pci -device VGA -vnc "unix:${VMD_VNC_SOCK}" \
     -netdev user,id=net0,hostfwd=tcp::2222-:22 -device "virtio-net-pci,netdev=net0,mac=${VMD_MAC}" \
     -serial "unix:${VMD_CONSOLE_SOCK},server,nowait" -monitor none \
-    -drive "file=${VMD_DISK},if=none,id=disk0,format=qcow2,cache=writeback" \
+    -drive "file=${VMD_DISK},if=none,id=disk0,format=qcow2,cache=writeback,discard=unmap,detect-zeroes=unmap" \
     -device virtio-blk-pci,drive=disk0,bootindex=1 \
     -qmp "unix:${VMD_QMP},server,nowait"
