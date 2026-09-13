@@ -5,7 +5,7 @@
 一个打包成单个 Docker 镜像(`zzci/qemu`)、可在浏览器里操作的小型 **QEMU/KVM 虚拟化引擎**。核心是
 一个静态 Rust 二进制 **`vmd`**,通过 QMP 守护 QEMU,**不含任何针对特定系统的逻辑**——客户机就是纯
 配置:`vmd.toml` 里的一个 `[guest.<name>]` 块加一个模板脚本文件夹。基于
-[`zzci/ubase`](https://hub.docker.com/r/zzci/ubase)(Ubuntu 22.04 + tini + supervisord)。
+[`zzci/ubase`](https://hub.docker.com/r/zzci/ubase)(Ubuntu 24.04 + tini + supervisord)。
 
 特性:内嵌 Web 控制台(noVNC + 串口终端,中英文)· KVM 加速 · 无人值守安装(Windows 11、Alpine)·
 vTPM 2.0 · 基于 virtiofs 的宿主机文件共享 · VNC/串口走 unix socket(除 Web 端口外零 TCP 监听)·

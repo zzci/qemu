@@ -6,7 +6,7 @@ A small **QEMU/KVM virtualization engine** packaged as one Docker image (`zzci/q
 from your browser. The engine is a single static Rust binary, **`vmd`**, that supervises QEMU over
 QMP; it contains **no per-OS logic**. Guests are pure configuration: a `[guest.<name>]` block in
 `vmd.toml` plus a template folder of scripts. Built on
-[`zzci/ubase`](https://hub.docker.com/r/zzci/ubase) (Ubuntu 22.04 + tini + supervisord).
+[`zzci/ubase`](https://hub.docker.com/r/zzci/ubase) (Ubuntu 24.04 + tini + supervisord).
 
 Features: embedded web console (noVNC + serial terminal, English/中文) · KVM acceleration ·
 unattended installs (Windows 11, Alpine) · vTPM 2.0 · host file sharing over virtiofs · VNC & serial
