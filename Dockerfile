@@ -15,9 +15,9 @@ COPY --from=ui /w/dist /src/ui/dist
 RUN cargo build --release   # profile strips + LTOs; output: target/release/vmd (UI baked in)
 
 # ---- virtiofsd: upstream's Rust daemon (QEMU 6.2 still ships the deprecated C one, whose sandbox
-# needs unshare(2), i.e. --cap-add SYS_ADMIN). Built on bullseye: its glibc/libcap-ng/libseccomp are
+# needs unshare(2), i.e. --cap-add SYS_ADMIN). Built on bookworm: its glibc/libcap-ng/libseccomp are
 # older than the runtime's, so the binary just runs there — a musl build would mix libcs and crash.
-FROM rust:1-slim-bullseye AS virtiofsd
+FROM rust:1-slim-bookworm AS virtiofsd
 RUN apt-get update && apt-get install -y --no-install-recommends libcap-ng-dev libseccomp-dev pkg-config \
     && cargo install virtiofsd --version 1.14.0 --locked --root /out \
     && rm -rf /var/lib/apt/lists/*
