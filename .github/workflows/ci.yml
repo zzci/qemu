@@ -7,7 +7,7 @@ on:
 
 jobs:
   supervisor:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: supervisor
@@ -35,7 +35,7 @@ jobs:
         run: cargo test
 
   ui:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: supervisor/ui
@@ -44,7 +44,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: supervisor/ui/package-lock.json
 
@@ -55,7 +55,7 @@ jobs:
         run: npm run build
 
   shell:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
 
